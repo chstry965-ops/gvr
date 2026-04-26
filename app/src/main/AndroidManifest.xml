@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <uses-permission android:name="android.permission.READ_CALL_LOG" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Разрешает показывать heads-up уведомление поверх incoming call UI (Android 14+) -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <!-- Чтобы heads-up уведомление с FullScreenIntent корректно появлялось на API 29+ -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Разрешает рисовать плашку поверх incoming call UI. Единственный надёжный способ
+         показать предупреждение во время звонка. Требует явного включения юзером. -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <application
+        android:name=".SpamBlockerApp"
+        android:allowBackup="true"
+        android:icon="@drawable/ic_shield"
+        android:roundIcon="@drawable/ic_shield"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.SpamBlocker"
+        tools:targetApi="34">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:theme="@style/Theme.SpamBlocker">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".service.SpamCallScreeningService"
+            android:exported="true"
+            android:permission="android.permission.BIND_SCREENING_SERVICE">
+            <intent-filter>
+                <action android:name="android.telecom.CallScreeningService" />
+            </intent-filter>
+        </service>
+
+        <receiver
+            android:name=".notification.SpamActionReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.antispam.blocker.ACTION_BLOCK" />
+                <action android:name="com.antispam.blocker.ACTION_ALLOW" />
+            </intent-filter>
+        </receiver>
+
+        <service
+            android:name=".overlay.SpamAlertOverlayService"
+            android:exported="false" />
+
+    </application>
+
+</manifest>
