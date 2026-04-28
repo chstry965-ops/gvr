@@ -1122,7 +1122,8 @@ def generate_user_numbers(scraper: AsyncScraper, count: int = 5000) -> int:
 # ── Main ───────────────────────────────────────────────────────────────────
 
 async def run_all(scraper: AsyncScraper, spravker_cities: Dict[str, str],
-                  zoon_cities: Dict[str, str], profile: str = 'smart'):
+                  zoon_cities: Dict[str, str], profile: str = 'smart',
+                  source_timeout: float = 0.0):
     if profile == 'weak':
         sources = [
             ('delivery_public',      lambda: scrape_delivery_public(scraper)),
@@ -1179,7 +1180,15 @@ async def run_all(scraper: AsyncScraper, spravker_cities: Dict[str, str],
         log.info(f"▶ Source: {name}")
         t0 = time.monotonic()
         try:
-            count = await fn()
+            if source_timeout > 0:
+                count = await asyncio.wait_for(fn(), timeout=source_timeout)
+            else:
+                count = await fn()
+        except asyncio.TimeoutError:
+            elapsed = time.monotonic() - t0
+            log.warning(f"  ⏱ {name}: aborted after {elapsed:.1f}s (--source-timeout={source_timeout}s)")
+            source_stats[name] = (0, elapsed)
+            return
         except Exception as e:  # noqa: BLE001 — log and continue
             log.error(f"  Source {name} failed: {e}")
             count = 0
@@ -1289,6 +1298,10 @@ async def main():
                         help='Игнорировать state-файл: переобойти все URL заново (сайты обновляются, новые номера будут). CSV с уже найденными номерами всё равно подхватывается для дедупа.')
     parser.add_argument('--reset-state', action='store_true',
                         help='Удалить state-файл перед стартом.')
+    parser.add_argument('--source-timeout', type=float, default=120.0,
+                        help='Макс. секунд на один источник (0=без лимита). '
+                             'Если источник (напр. rusprofile) висит на банах/таймаутах — он будет отменён, '
+                             'другие продолжат работу.')
     parser.add_argument('--output', default=OUTPUT_PATH,
                         help='Выходной CSV файл')
     args = parser.parse_args()
@@ -1352,7 +1365,10 @@ async def main():
         scraper.load_blacklist()
 
         # 4. Scrape all sources
-        stats = await run_all(scraper, spravker_cities, zoon_cities, profile=args.profile)
+        stats = await run_all(
+            scraper, spravker_cities, zoon_cities,
+            profile=args.profile, source_timeout=args.source_timeout,
+        )
 
         if args.add_user_numbers > 0:
             log.info(f"▶ Source: numbering_plan_background ({args.add_user_numbers})")
