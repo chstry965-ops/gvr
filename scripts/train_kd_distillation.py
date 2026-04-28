@@ -41,7 +41,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(__file__))
-from ru_metadata_features import COMPACT_FEATURES, ID_TO_LABEL, LABEL_TO_ID
+from ru_metadata_features import COMPACT_FEATURES, FIELD_TO_RU, ID_TO_LABEL, LABEL_TO_ID
 
 BASE_DIR = os.path.join(os.path.dirname(__file__), '..', 'datasets', 'ru')
 PROCESSED_DIR = os.path.join(BASE_DIR, 'processed')
@@ -82,19 +82,51 @@ def file_sha256(path: str) -> str:
 
 
 def load_csv(path: str) -> Tuple[np.ndarray, np.ndarray]:
+    """Load CSV with COMPACT_FEATURES + label.
+
+    Принимает оба варианта заголовков:
+      - английские: 'isContact', ..., 'label'
+      - русские:    'в_контактах', ..., 'метка' (формат builder-а)
+    """
     with open(path, 'r', encoding='utf-8') as f:
         reader = csv.DictReader(f)
         rows = list(reader)
     if not rows:
         raise SystemExit(f'No rows in {path}')
-    missing = [name for name in COMPACT_FEATURES if name not in rows[0]]
+
+    headers = list(rows[0].keys())
+    has_english = all(name in headers for name in COMPACT_FEATURES)
+    if has_english:
+        feature_keys = {name: name for name in COMPACT_FEATURES}
+        label_key = 'label' if 'label' in headers else 'метка'
+    else:
+        # russian headers — translate via FIELD_TO_RU
+        feature_keys = {name: FIELD_TO_RU.get(name, name) for name in COMPACT_FEATURES}
+        label_key = FIELD_TO_RU.get('label', 'метка')
+
+    missing = [eng for eng, ru in feature_keys.items() if ru not in headers]
     if missing:
-        raise SystemExit(f'CSV missing features: {missing[:5]}{"..." if len(missing) > 5 else ""}')
+        raise SystemExit(
+            f'CSV missing features ({len(missing)}): {missing[:5]}{"..." if len(missing) > 5 else ""}'
+            f'\nHeaders sample: {headers[:5]}'
+        )
+    if label_key not in headers:
+        raise SystemExit(f"CSV missing label column ('label' or 'метка'). Headers: {headers[:8]}...")
+
     X = np.array(
-        [[float(row[name]) for name in COMPACT_FEATURES] for row in rows],
+        [[float(row[feature_keys[name]]) for name in COMPACT_FEATURES] for row in rows],
         dtype=np.float32,
     )
-    y = np.array([int(float(row['label'])) for row in rows], dtype=np.int64)
+    raw_labels = [row[label_key] for row in rows]
+    # label may be int code (0/1/2) or string ('ALLOW'/'WARN'/'BLOCK')
+    y_list: List[int] = []
+    for v in raw_labels:
+        s = str(v).strip()
+        if s in LABEL_TO_ID:
+            y_list.append(LABEL_TO_ID[s])
+        else:
+            y_list.append(int(float(s)))
+    y = np.array(y_list, dtype=np.int64)
     return X, y
 
 
