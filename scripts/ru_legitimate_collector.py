@@ -62,8 +62,10 @@ FETCH_TIMEOUT_TOTAL = 10.0
 FETCH_TIMEOUT_SOCK = 6.0
 FETCH_RETRIES = 2
 
-# Hosts that need stricter throttling — apply per-host cap = STRICT and small jitter.
-STRICT_HOSTS = ('rusprofile', 'cian')
+# Hosts that ban quickly under load — apply per-host cap = STRICT and inter-request
+# delay. Add a host here only if you've actually seen it return 403/429 under
+# the default per-host concurrency.
+STRICT_HOSTS = ('rusprofile',)
 OUTPUT_PATH = os.path.normpath(os.path.join(
     os.path.dirname(__file__), '..', 'datasets', 'ru', 'raw', 'legitimate_numbers.csv'
 ))
