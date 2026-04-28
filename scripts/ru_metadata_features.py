@@ -380,9 +380,14 @@ def number_type(normalized_number: Optional[str]) -> str:
 
 
 def infer_prefix_risk(normalized_number: Optional[str], metadata: Dict) -> float:
+    """Оценка риска по префиксу номера.
+
+    Важно: не использует metadata['label'] — это было бы leakage в обучении. inAllowlist является реальным
+    сигналом (статический бандл whitelist в APK), но в виде отражения источника данных, а не label.
+    """
     if not normalized_number:
         return 0.0
-    if metadata.get('inAllowlist') or metadata.get('label') == 'ALLOW':
+    if metadata.get('inAllowlist'):
         return 0.0
     digits = digits_only(normalized_number)
     if normalized_number.startswith('+7800'):
@@ -437,7 +442,9 @@ def compact_feature_vector(
     if metadata.get('numbering_match') is not None:
         is_valid_range = bool(metadata.get('numbering_match'))
 
-    label_upper = (label or '').upper()
+    # label больше не используется внутри compact_feature_vector (раньше — для inBlacklist/inAllowlist/prefixRisk,
+    # это было leakage). Параметр сохраняем для обратной совместимости вызывающих.
+    _ = label
 
     values = {
         'isContact': 1.0 if metadata.get('isContact') else 0.0,
@@ -454,7 +461,8 @@ def compact_feature_vector(
         'repeatDigitRatio': clamp01(repeat_digit_ratio(digits)),
         'maxSameDigitRun': clamp01(max_same_digit_run(digits)),
         'beautifulNumberFlag': 1.0 if beautiful_number_flag(digits) else 0.0,
-        'prefixRisk': clamp01(infer_prefix_risk(normalized_number, {'label': label_upper, **metadata})),
+        # Не передаём label в metadata: infer_prefix_risk не должен видеть целевую метку.
+        'prefixRisk': clamp01(infer_prefix_risk(normalized_number, metadata)),
         'callFrequency': clamp01(safe_float(metadata.get('callFrequency'), 0.0)),
         'isNightTime': 1.0 if metadata.get('isNightTime') else 0.0,
         'recentBankApp': 1.0 if metadata.get('recentBankApp') else 0.0,
@@ -462,8 +470,11 @@ def compact_feature_vector(
         'recentMarketplaceApp': 1.0 if metadata.get('recentMarketplaceApp') else 0.0,
         'recentMessengerApp': 1.0 if metadata.get('recentMessengerApp') else 0.0,
         'previouslyRejected': 1.0 if metadata.get('previouslyRejected') else 0.0,
-        'inBlacklist': 1.0 if label_upper == 'BLOCK' or metadata.get('inBlacklist') else 0.0,
-        'inAllowlist': 1.0 if label_upper == 'ALLOW' or metadata.get('inAllowlist') else 0.0,
+        # inBlacklist/inAllowlist отражают реальное состояние в metadata (статические бандлы/пользовательские списки).
+        # НЕ связаны с label — иначе это leakage: модель выучивал бы свой же ответ из фичи
+        # и проваливалась бы в проде на неизвестных номерах.
+        'inBlacklist': 1.0 if metadata.get('inBlacklist') else 0.0,
+        'inAllowlist': 1.0 if metadata.get('inAllowlist') else 0.0,
         'hiddenNumber': 1.0 if metadata.get('hiddenNumber') else 0.0,
         'callerVerifyFailed': 1.0 if metadata.get('callerVerifyFailed') else 0.0,
         'userVulnerability': clamp01(safe_float(metadata.get('userVulnerability'), 0.35)),

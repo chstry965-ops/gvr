@@ -375,6 +375,28 @@ def enrich_numbering(number: str, numbering_plan: Optional[NumberingPlan]) -> Di
     }
 
 
+def _is_public_blacklist_source(source: Optional[str], reputation: Optional[Dict]) -> bool:
+    """Номер в публичном blacklist (мошеловка и т.п.) — реальный сигнал, который будет доступен на устройстве
+    через бандл/обновляемый фид, а не выводится из label.
+    """
+    haystacks = []
+    if source:
+        haystacks.append(source.lower())
+    if reputation:
+        rep_src = reputation.get('source')
+        if rep_src:
+            haystacks.append(str(rep_src).lower())
+    return any('moshelovka' in h or 'public_blacklist' in h for h in haystacks)
+
+
+def _is_static_allowlist_source(source: Optional[str]) -> bool:
+    """Номер в статическом whitelist (банки/госуслуги/официальные бизнесы) — бандлится в APK."""
+    if not source:
+        return False
+    s = source.lower()
+    return s.startswith('whitelist') or s.startswith('static_whitelist')
+
+
 def build_feature_record(number: str, label: str, weight: float, source: str, reputation: Optional[Dict], numbering: Dict) -> Dict:
     reputation = reputation or {}
     negative = safe_int(reputation.get('negative_count'))
@@ -384,13 +406,16 @@ def build_feature_record(number: str, label: str, weight: float, source: str, re
     total_votes = max(negative + positive + neutral, review_count, 1)
     search_volume = safe_int(reputation.get('search_volume'))
     flags = category_flags(reputation.get('categories', ''))
+    in_public_bl = _is_public_blacklist_source(source, reputation)
+    in_static_wl = _is_static_allowlist_source(source)
     compact_meta = {
         **reputation,
         **numbering,
         'source_confidence': safe_float(reputation.get('source_confidence'), 0.95 if source == 'whitelist_official' else 0.5),
         'source_reliability': safe_float(reputation.get('source_reliability'), 0.5),
-        'inAllowlist': label == 'ALLOW',
-        'inBlacklist': label == 'BLOCK',
+        # Источник-based, НЕ label-based: эти флаги отражают реальные бандл/фиды на устройстве.
+        'inAllowlist': in_static_wl,
+        'inBlacklist': in_public_bl,
         'contactsAvailable': True,
     }
     compact = compact_feature_vector(number, label, compact_meta)
@@ -508,12 +533,15 @@ def main():
             signal_meta['source_confidence'] = whitelist_info.get('source_confidence', signal_meta.get('source_confidence', 0.7))
         feature_record = build_feature_record(number, label, weight, source, signal_meta, numbering)
         metadata_rows.append(feature_record)
+        in_public_bl = _is_public_blacklist_source(source, signal_meta) or in_public_blacklist
+        in_static_wl = _is_static_allowlist_source(source)
         tflite_rows.append(compact_row(number, label, {
             **signal_meta,
             **numbering,
             'source_confidence': feature_record['source_confidence'],
-            'inAllowlist': label == 'ALLOW',
-            'inBlacklist': label == 'BLOCK',
+            # source-based, НЕ label-based: фичи должны отражать то, что приложение реально видит на звонке.
+            'inAllowlist': in_static_wl,
+            'inBlacklist': in_public_bl,
         }) + [LABEL_TO_ID[label]])
         labeled_rows.append({
             'normalized_number': number,
