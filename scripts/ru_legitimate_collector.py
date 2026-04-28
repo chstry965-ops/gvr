@@ -51,11 +51,16 @@ from ru_number_normalizer import normalize_ru_phone, is_russian_number
 # ── Config ──────────────────────────────────────────────────────────────────
 
 CONCURRENCY = 20
-PER_HOST_CONCURRENCY = 8       # parallel requests allowed per host
-PER_HOST_CONCURRENCY_STRICT = 2  # for hosts that ban quickly (rusprofile, cian)
+PER_HOST_CONCURRENCY = 12      # parallel requests allowed per host
+PER_HOST_CONCURRENCY_STRICT = 3  # for hosts that ban quickly (rusprofile, cian)
 DELAY_MIN = 0.0               # base inter-request delay (seconds)
 DELAY_MAX = 0.3
 MAX_PAGES = 30
+
+# Aggressive timeouts: dead URLs (e.g. irr.ru pages that hang) stop wasting time.
+FETCH_TIMEOUT_TOTAL = 10.0
+FETCH_TIMEOUT_SOCK = 6.0
+FETCH_RETRIES = 2
 
 # Hosts that need stricter throttling — apply per-host cap = STRICT and small jitter.
 STRICT_HOSTS = ('rusprofile', 'cian')
@@ -465,13 +470,15 @@ class AsyncScraper:
     async def start(self):
         # Bigger TCP connector with per-host cap → more parallel sockets.
         connector = aiohttp.TCPConnector(
-            limit=max(64, self._per_host_concurrency * 8),
-            limit_per_host=max(4, self._per_host_concurrency),
+            limit=max(128, self._per_host_concurrency * 12),
+            limit_per_host=max(8, self._per_host_concurrency),
             ssl=False,
             ttl_dns_cache=300,
         )
         self.session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=20, sock_read=12),
+            timeout=aiohttp.ClientTimeout(
+                total=FETCH_TIMEOUT_TOTAL, sock_read=FETCH_TIMEOUT_SOCK,
+            ),
             headers={'Accept-Language': 'ru-RU,ru;q=0.9,en;q=0.5'},
             connector=connector,
         )
@@ -519,7 +526,7 @@ class AsyncScraper:
         headers = {'User-Agent': random.choice(USER_AGENTS)}
         allow = allow_status or {200}
 
-        for attempt in range(3):
+        for attempt in range(FETCH_RETRIES):
             try:
                 # Both global and per-host caps. HTTP runs OUTSIDE any per-host
                 # lock so different URLs on the same host fetch concurrently.
@@ -541,8 +548,8 @@ class AsyncScraper:
                             self.stats['failed'] += 1
                             return None
             except (aiohttp.ClientError, asyncio.TimeoutError):
-                if attempt < 2:
-                    await asyncio.sleep(0.5 * (attempt + 1))
+                if attempt < FETCH_RETRIES - 1:
+                    await asyncio.sleep(0.3 * (attempt + 1))
                 else:
                     self.stats['failed'] += 1
                     return None
@@ -1164,23 +1171,53 @@ async def run_all(scraper: AsyncScraper, spravker_cities: Dict[str, str],
             ('mos_ru',               lambda: scrape_mos_ru(scraper)),
         ]
 
-    source_stats = {}
-    for name, fn in sources:
+    source_stats: Dict[str, Tuple[int, float]] = {}
+
+    async def _run_source(name: str, fn) -> None:
         log.info(f"▶ Source: {name}")
         t0 = time.monotonic()
         try:
             count = await fn()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — log and continue
             log.error(f"  Source {name} failed: {e}")
             count = 0
         elapsed = time.monotonic() - t0
         source_stats[name] = (count, elapsed)
         log.info(f"  ✓ {name}: {count} numbers in {elapsed:.1f}s")
 
-        # Incremental save after each source
-        save_results(scraper.results, scraper._output_path)
-        save_state(scraper, scraper._output_path)
-        log.info(f"  💾 Saved {len(scraper.results)} numbers | fetched={scraper.stats['fetched']} skipped={scraper.stats['skipped']}")
+    # Periodic background autosave so data persists even with concurrent sources.
+    autosave_stop = asyncio.Event()
+
+    async def _autosave():
+        while not autosave_stop.is_set():
+            try:
+                await asyncio.wait_for(autosave_stop.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                pass
+            try:
+                save_results(scraper.results, scraper._output_path)
+                save_state(scraper, scraper._output_path)
+                log.info(
+                    f"  💾 Autosave: {len(scraper.results)} numbers | "
+                    f"fetched={scraper.stats['fetched']} skipped={scraper.stats['skipped']}"
+                )
+            except Exception as e:  # noqa: BLE001
+                log.warning(f"  autosave failed: {e}")
+
+    autosave_task = asyncio.create_task(_autosave())
+    try:
+        # Run all sources in parallel — they share scraper state safely
+        # (single-threaded asyncio + dedup via scraper.seen).
+        await asyncio.gather(
+            *[_run_source(name, fn) for name, fn in sources],
+            return_exceptions=True,
+        )
+    finally:
+        autosave_stop.set()
+        try:
+            await autosave_task
+        except Exception:
+            pass
 
     return source_stats
 
