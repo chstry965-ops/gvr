@@ -842,30 +842,28 @@ async def scrape_public_url_list(scraper: AsyncScraper, source: str,
     total = 0
     listings = await scraper.fetch_many([u for u, _, _ in urls])
 
-    detail_jobs: List[Tuple[str, str, str, str]] = []  # (page_url, name, category, link, title)
-    page_titles: List[Optional[str]] = []
+    # (page_url, name, category, link, parent_title) — parent_title нужен как fallback для detail-страниц.
+    detail_jobs: List[Tuple[str, str, str, str, Optional[str]]] = []
     for (page_url, name, category), html in zip(urls, listings):
         if not html:
-            page_titles.append(None)
             continue
         title = extract_title(html)
-        page_titles.append(title)
         phones = extract_phones(html)
         if phones:
             added = scraper.add_phones(phones, title or name, category, source, '', page_url, confidence)
             total += added
         for link in extract_links(html, page_url, limit=link_limit):
-            detail_jobs.append((page_url, name, category, link))
+            detail_jobs.append((page_url, name, category, link, title))
 
     if detail_jobs:
         detail_htmls = await scraper.fetch_many([j[3] for j in detail_jobs])
-        for (page_url, name, category, link), html2 in zip(detail_jobs, detail_htmls):
+        for (page_url, name, category, link, parent_title), html2 in zip(detail_jobs, detail_htmls):
             if not html2:
                 continue
             phones2 = extract_phones(html2)
             if phones2:
                 title2 = extract_title(html2)
-                added = scraper.add_phones(phones2, title2 or name, category,
+                added = scraper.add_phones(phones2, title2 or parent_title or name, category,
                                            source, '', link, confidence)
                 total += added
     return total
