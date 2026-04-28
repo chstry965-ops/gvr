@@ -688,15 +688,80 @@ def build_export_model(backbone) -> 'tf.keras.Model':
     return tf.keras.Model(inputs, probs, name='spam_model_export')
 
 
-def export_tflite(backbone, out_path: str) -> Dict:
+def _make_serving_fn(backbone):
+    """tf.function with fixed [1, N] input signature returning softmax probs.
+
+    Avoids the TFLiteConverter.from_keras_model bug under TF 2.16+/Keras 3
+    ('NoneType is not callable' from tflite_keras_util._wrapped_model).
+    """
     import tensorflow as tf
-    export_model = build_export_model(backbone)
-    converter = tf.lite.TFLiteConverter.from_keras_model(export_model)
-    converter.optimizations = [tf.lite.Optimize.DEFAULT]
-    tflite_bytes = converter.convert()
+    n_features = len(COMPACT_FEATURES)
+
+    @tf.function(input_signature=[tf.TensorSpec([1, n_features], tf.float32, name='features')])
+    def serving_fn(x):
+        logits = backbone(x, training=False)
+        return tf.nn.softmax(logits, axis=-1)
+
+    return serving_fn
+
+
+def export_tflite(backbone, out_path: str) -> Dict:
+    """Export backbone to a float32 TFLite file with [1, N] input and [1, 3] softmax output.
+
+    Tries three converter paths in order — first that succeeds wins:
+      1. from_concrete_functions(serving_fn) — most stable on Keras 3.
+      2. from_keras_model(export_model)      — classic path.
+      3. from_saved_model(SavedModel dir)    — last resort.
+    """
+    import tensorflow as tf
+    import tempfile
+
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    export_model = build_export_model(backbone)
+
+    errors: List[str] = []
+    tflite_bytes: Optional[bytes] = None
+
+    # Path 1: concrete-function signature
+    try:
+        serving_fn = _make_serving_fn(backbone)
+        concrete = serving_fn.get_concrete_function()
+        converter = tf.lite.TFLiteConverter.from_concrete_functions([concrete])
+        converter.optimizations = [tf.lite.Optimize.DEFAULT]
+        tflite_bytes = converter.convert()
+    except Exception as e:
+        errors.append(f'from_concrete_functions: {type(e).__name__}: {e}')
+
+    # Path 2: keras model directly
+    if tflite_bytes is None:
+        try:
+            converter = tf.lite.TFLiteConverter.from_keras_model(export_model)
+            converter.optimizations = [tf.lite.Optimize.DEFAULT]
+            tflite_bytes = converter.convert()
+        except Exception as e:
+            errors.append(f'from_keras_model: {type(e).__name__}: {e}')
+
+    # Path 3: SavedModel dir round-trip
+    if tflite_bytes is None:
+        try:
+            with tempfile.TemporaryDirectory(prefix='kd_savedmodel_') as tmpdir:
+                serving_fn = _make_serving_fn(backbone)
+                tf.saved_model.save(
+                    backbone, tmpdir,
+                    signatures={'serving_default': serving_fn.get_concrete_function()},
+                )
+                converter = tf.lite.TFLiteConverter.from_saved_model(tmpdir)
+                converter.optimizations = [tf.lite.Optimize.DEFAULT]
+                tflite_bytes = converter.convert()
+        except Exception as e:
+            errors.append(f'from_saved_model: {type(e).__name__}: {e}')
+
+    if tflite_bytes is None:
+        raise SystemExit('TFLite export failed via all paths:\n  - ' + '\n  - '.join(errors))
+
     with open(out_path, 'wb') as f:
         f.write(tflite_bytes)
+    print(f'  TFLite converter path used: {"concrete_functions" if not errors else ("keras_model" if len(errors) == 1 else "saved_model")}')
     return {'path': out_path, 'bytes': len(tflite_bytes), 'export_model': export_model}
 
 
