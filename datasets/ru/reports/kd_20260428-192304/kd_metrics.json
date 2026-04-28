@@ -1,0 +1,1128 @@
+{
+  "created_at": "2026-04-28T19:23:04.944298",
+  "data": "C:\\Users\\Redmi\\CascadeProjects\\windsurf-project\\scripts\\..\\datasets\\ru\\processed\\ru_tflite_features.csv",
+  "dataset_hash": "5ace4b937fedc6c852abbcc5bb8946a0024f7f7d1c9e56a79f5044a409a3f6a7",
+  "rows": 20364,
+  "feature_count": 32,
+  "features": [
+    "isContact",
+    "isRussianNumber",
+    "isForeignNumber",
+    "isShortCode",
+    "isStandardLen",
+    "isTollFree8800",
+    "isGeographical",
+    "isMobileRu",
+    "isValidRuRange",
+    "spoofingPrefixFlag",
+    "digitEntropy",
+    "repeatDigitRatio",
+    "maxSameDigitRun",
+    "beautifulNumberFlag",
+    "prefixRisk",
+    "callFrequency",
+    "isNightTime",
+    "recentBankApp",
+    "recentGovApp",
+    "recentMarketplaceApp",
+    "recentMessengerApp",
+    "previouslyRejected",
+    "inBlacklist",
+    "inAllowlist",
+    "hiddenNumber",
+    "callerVerifyFailed",
+    "userVulnerability",
+    "userBusinessActivity",
+    "contactsAvailable",
+    "usageAccessAvailable",
+    "reputationScore",
+    "sourceConfidence"
+  ],
+  "class_counts": {
+    "ALLOW": 10234,
+    "WARN": 2230,
+    "BLOCK": 7900
+  },
+  "split": {
+    "train": 16291,
+    "val": 2036,
+    "test": 2037
+  },
+  "teacher_train_per_class": 6000,
+  "student_train_per_class": 4000,
+  "teacher_counts_actual": {
+    "ALLOW": 6000,
+    "WARN": 1321,
+    "BLOCK": 4679
+  },
+  "student_counts_actual": {
+    "ALLOW": 4000,
+    "WARN": 881,
+    "BLOCK": 3119
+  },
+  "smote_applied": false,
+  "smote_info": {},
+  "kd": {
+    "T": 2.0,
+    "alpha": 0.3,
+    "lr": 0.00043284502212938834,
+    "dropout": 0.3827500072434707,
+    "hidden": [
+      48,
+      64,
+      24
+    ]
+  },
+  "stage1_grid": {
+    "all": [
+      {
+        "T": 2.0,
+        "alpha": 0.3,
+        "val_acc": 1.0,
+        "metrics": {
+          "ALLOW": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0
+          },
+          "WARN": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0
+          },
+          "BLOCK": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0
+          },
+          "macro_f1": 1.0,
+          "confusion_matrix": [
+            [
+              1023,
+              0,
+              0
+            ],
+            [
+              0,
+              223,
+              0
+            ],
+            [
+              0,
+              0,
+              790
+            ]
+          ],
+          "roc_auc_ovr": 1.0
+        },
+        "score": 1.0,
+        "elapsed_s": 3.9030394554138184
+      },
+      {
+        "T": 2.0,
+        "alpha": 0.5,
+        "val_acc": 1.0,
+        "metrics": {
+          "ALLOW": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0
+          },
+          "WARN": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0
+          },
+          "BLOCK": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0
+          },
+          "macro_f1": 1.0,
+          "confusion_matrix": [
+            [
+              1023,
+              0,
+              0
+            ],
+            [
+              0,
+              223,
+              0
+            ],
+            [
+              0,
+              0,
+              790
+            ]
+          ],
+          "roc_auc_ovr": 1.0
+        },
+        "score": 1.0,
+        "elapsed_s": 4.400776147842407
+      },
+      {
+        "T": 2.0,
+        "alpha": 0.7,
+        "val_acc": 1.0,
+        "metrics": {
+          "ALLOW": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0
+          },
+          "WARN": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0
+          },
+          "BLOCK": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0
+          },
+          "macro_f1": 1.0,
+          "confusion_matrix": [
+            [
+              1023,
+              0,
+              0
+            ],
+            [
+              0,
+              223,
+              0
+            ],
+            [
+              0,
+              0,
+              790
+            ]
+          ],
+          "roc_auc_ovr": 1.0
+        },
+        "score": 1.0,
+        "elapsed_s": 3.7825417518615723
+      },
+      {
+        "T": 4.0,
+        "alpha": 0.3,
+        "val_acc": 1.0,
+        "metrics": {
+          "ALLOW": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0
+          },
+          "WARN": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0
+          },
+          "BLOCK": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0
+          },
+          "macro_f1": 1.0,
+          "confusion_matrix": [
+            [
+              1023,
+              0,
+              0
+            ],
+            [
+              0,
+              223,
+              0
+            ],
+            [
+              0,
+              0,
+              790
+            ]
+          ],
+          "roc_auc_ovr": 1.0
+        },
+        "score": 1.0,
+        "elapsed_s": 3.669283390045166
+      },
+      {
+        "T": 4.0,
+        "alpha": 0.5,
+        "val_acc": 1.0,
+        "metrics": {
+          "ALLOW": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0
+          },
+          "WARN": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0
+          },
+          "BLOCK": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0
+          },
+          "macro_f1": 1.0,
+          "confusion_matrix": [
+            [
+              1023,
+              0,
+              0
+            ],
+            [
+              0,
+              223,
+              0
+            ],
+            [
+              0,
+              0,
+              790
+            ]
+          ],
+          "roc_auc_ovr": 1.0
+        },
+        "score": 1.0,
+        "elapsed_s": 3.65248703956604
+      },
+      {
+        "T": 4.0,
+        "alpha": 0.7,
+        "val_acc": 1.0,
+        "metrics": {
+          "ALLOW": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0
+          },
+          "WARN": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0
+          },
+          "BLOCK": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0
+          },
+          "macro_f1": 1.0,
+          "confusion_matrix": [
+            [
+              1023,
+              0,
+              0
+            ],
+            [
+              0,
+              223,
+              0
+            ],
+            [
+              0,
+              0,
+              790
+            ]
+          ],
+          "roc_auc_ovr": 1.0
+        },
+        "score": 1.0,
+        "elapsed_s": 3.808257579803467
+      },
+      {
+        "T": 8.0,
+        "alpha": 0.3,
+        "val_acc": 1.0,
+        "metrics": {
+          "ALLOW": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0
+          },
+          "WARN": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0
+          },
+          "BLOCK": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0
+          },
+          "macro_f1": 1.0,
+          "confusion_matrix": [
+            [
+              1023,
+              0,
+              0
+            ],
+            [
+              0,
+              223,
+              0
+            ],
+            [
+              0,
+              0,
+              790
+            ]
+          ],
+          "roc_auc_ovr": 1.0
+        },
+        "score": 1.0,
+        "elapsed_s": 3.649756669998169
+      },
+      {
+        "T": 8.0,
+        "alpha": 0.5,
+        "val_acc": 1.0,
+        "metrics": {
+          "ALLOW": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0
+          },
+          "WARN": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0
+          },
+          "BLOCK": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0
+          },
+          "macro_f1": 1.0,
+          "confusion_matrix": [
+            [
+              1023,
+              0,
+              0
+            ],
+            [
+              0,
+              223,
+              0
+            ],
+            [
+              0,
+              0,
+              790
+            ]
+          ],
+          "roc_auc_ovr": 1.0
+        },
+        "score": 1.0,
+        "elapsed_s": 3.7047152519226074
+      },
+      {
+        "T": 8.0,
+        "alpha": 0.7,
+        "val_acc": 1.0,
+        "metrics": {
+          "ALLOW": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0
+          },
+          "WARN": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0
+          },
+          "BLOCK": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0
+          },
+          "macro_f1": 1.0,
+          "confusion_matrix": [
+            [
+              1023,
+              0,
+              0
+            ],
+            [
+              0,
+              223,
+              0
+            ],
+            [
+              0,
+              0,
+              790
+            ]
+          ],
+          "roc_auc_ovr": 1.0
+        },
+        "score": 1.0,
+        "elapsed_s": 4.091720819473267
+      }
+    ],
+    "best": {
+      "T": 2.0,
+      "alpha": 0.3,
+      "score": 1.0,
+      "metrics": {
+        "ALLOW": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "WARN": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "BLOCK": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "macro_f1": 1.0,
+        "confusion_matrix": [
+          [
+            1023,
+            0,
+            0
+          ],
+          [
+            0,
+            223,
+            0
+          ],
+          [
+            0,
+            0,
+            790
+          ]
+        ],
+        "roc_auc_ovr": 1.0
+      }
+    }
+  },
+  "stage2_optuna": {
+    "best_params": {
+      "lr": 0.00043284502212938834,
+      "dropout": 0.3827500072434707,
+      "h0": 48,
+      "h1": 64,
+      "h2": 24
+    },
+    "best_value": 1.0,
+    "trials": [
+      {
+        "params": {
+          "lr": 0.00043284502212938834,
+          "dropout": 0.3827500072434707,
+          "h0": 48,
+          "h1": 64,
+          "h2": 24
+        },
+        "val_acc": 1.0,
+        "macro_f1": 1.0,
+        "block_precision": 1.0,
+        "score": 1.0
+      },
+      {
+        "params": {
+          "lr": 0.0044447541666908135,
+          "dropout": 0.34135492428014763,
+          "h0": 48,
+          "h1": 48,
+          "h2": 24
+        },
+        "val_acc": 1.0,
+        "macro_f1": 1.0,
+        "block_precision": 1.0,
+        "score": 1.0
+      },
+      {
+        "params": {
+          "lr": 0.0003135775732257748,
+          "dropout": 0.17822664515279213,
+          "h0": 64,
+          "h1": 48,
+          "h2": 16
+        },
+        "val_acc": 1.0,
+        "macro_f1": 1.0,
+        "block_precision": 1.0,
+        "score": 1.0
+      },
+      {
+        "params": {
+          "lr": 0.004093813608598782,
+          "dropout": 0.3879712115760958,
+          "h0": 48,
+          "h1": 32,
+          "h2": 32
+        },
+        "val_acc": 1.0,
+        "macro_f1": 1.0,
+        "block_precision": 1.0,
+        "score": 1.0
+      },
+      {
+        "params": {
+          "lr": 0.00027520696850790545,
+          "dropout": 0.2818827995238937,
+          "h0": 96,
+          "h1": 48,
+          "h2": 16
+        },
+        "val_acc": 1.0,
+        "macro_f1": 1.0,
+        "block_precision": 1.0,
+        "score": 1.0
+      },
+      {
+        "params": {
+          "lr": 0.0036832964384234204,
+          "dropout": 0.08097237571817183,
+          "h0": 96,
+          "h1": 64,
+          "h2": 32
+        },
+        "val_acc": 1.0,
+        "macro_f1": 1.0,
+        "block_precision": 1.0,
+        "score": 1.0
+      },
+      {
+        "params": {
+          "lr": 0.000173550564698551,
+          "dropout": 0.3307689432639139,
+          "h0": 64,
+          "h1": 64,
+          "h2": 32
+        },
+        "val_acc": 1.0,
+        "macro_f1": 1.0,
+        "block_precision": 1.0,
+        "score": 1.0
+      },
+      {
+        "params": {
+          "lr": 0.00013359790328445562,
+          "dropout": 0.17546300499049544,
+          "h0": 64,
+          "h1": 32,
+          "h2": 24
+        },
+        "val_acc": 1.0,
+        "macro_f1": 1.0,
+        "block_precision": 1.0,
+        "score": 1.0
+      },
+      {
+        "params": {
+          "lr": 0.00321623546920742,
+          "dropout": 0.2152752238066823,
+          "h0": 96,
+          "h1": 48,
+          "h2": 16
+        },
+        "val_acc": 1.0,
+        "macro_f1": 1.0,
+        "block_precision": 1.0,
+        "score": 1.0
+      },
+      {
+        "params": {
+          "lr": 0.00015251209898002935,
+          "dropout": 0.06100021499035699,
+          "h0": 48,
+          "h1": 32,
+          "h2": 16
+        },
+        "val_acc": 1.0,
+        "macro_f1": 1.0,
+        "block_precision": 1.0,
+        "score": 1.0
+      },
+      {
+        "params": {
+          "lr": 0.0008730770780448572,
+          "dropout": 0.2895071238517957,
+          "h0": 48,
+          "h1": 64,
+          "h2": 24
+        },
+        "val_acc": 1.0,
+        "macro_f1": 1.0,
+        "block_precision": 1.0,
+        "score": 1.0
+      },
+      {
+        "params": {
+          "lr": 0.001006495613245455,
+          "dropout": 0.3941989454751265,
+          "h0": 48,
+          "h1": 48,
+          "h2": 24
+        },
+        "val_acc": 1.0,
+        "macro_f1": 1.0,
+        "block_precision": 1.0,
+        "score": 1.0
+      },
+      {
+        "params": {
+          "lr": 0.0016615243906338939,
+          "dropout": 0.3361572296707028,
+          "h0": 48,
+          "h1": 64,
+          "h2": 24
+        },
+        "val_acc": 1.0,
+        "macro_f1": 1.0,
+        "block_precision": 1.0,
+        "score": 1.0
+      },
+      {
+        "params": {
+          "lr": 0.00040498916540499924,
+          "dropout": 0.3448211014803443,
+          "h0": 48,
+          "h1": 48,
+          "h2": 24
+        },
+        "val_acc": 1.0,
+        "macro_f1": 1.0,
+        "block_precision": 1.0,
+        "score": 1.0
+      },
+      {
+        "params": {
+          "lr": 0.0018637106215085555,
+          "dropout": 0.2854352655389182,
+          "h0": 48,
+          "h1": 64,
+          "h2": 24
+        },
+        "val_acc": 1.0,
+        "macro_f1": 1.0,
+        "block_precision": 1.0,
+        "score": 1.0
+      },
+      {
+        "params": {
+          "lr": 0.0005229377100752717,
+          "dropout": 0.3982790212528284,
+          "h0": 48,
+          "h1": 48,
+          "h2": 24
+        },
+        "val_acc": 1.0,
+        "macro_f1": 1.0,
+        "block_precision": 1.0,
+        "score": 1.0
+      },
+      {
+        "params": {
+          "lr": 0.0017450038056571545,
+          "dropout": 0.2503889242033722,
+          "h0": 48,
+          "h1": 64,
+          "h2": 24
+        },
+        "val_acc": 1.0,
+        "macro_f1": 1.0,
+        "block_precision": 1.0,
+        "score": 1.0
+      },
+      {
+        "params": {
+          "lr": 0.0006166272361014768,
+          "dropout": 0.3549581047381157,
+          "h0": 48,
+          "h1": 64,
+          "h2": 24
+        },
+        "val_acc": 1.0,
+        "macro_f1": 1.0,
+        "block_precision": 1.0,
+        "score": 1.0
+      },
+      {
+        "params": {
+          "lr": 0.0011613718427489446,
+          "dropout": 0.31306469868552617,
+          "h0": 96,
+          "h1": 48,
+          "h2": 24
+        },
+        "val_acc": 1.0,
+        "macro_f1": 1.0,
+        "block_precision": 1.0,
+        "score": 1.0
+      },
+      {
+        "params": {
+          "lr": 0.0002789077360189224,
+          "dropout": 0.11762669394081725,
+          "h0": 48,
+          "h1": 32,
+          "h2": 32
+        },
+        "val_acc": 1.0,
+        "macro_f1": 1.0,
+        "block_precision": 1.0,
+        "score": 1.0
+      }
+    ]
+  },
+  "thresholds": {
+    "block_threshold": 0.33,
+    "warn_threshold": 0.27,
+    "block_precision": 1.0,
+    "block_recall": 1.0,
+    "block_f1": 1.0,
+    "warn_f1": 1.0
+  },
+  "val_metrics": {
+    "catboost_teacher": {
+      "ALLOW": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "WARN": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "BLOCK": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "macro_f1": 1.0,
+      "confusion_matrix": [
+        [
+          1023,
+          0,
+          0
+        ],
+        [
+          0,
+          223,
+          0
+        ],
+        [
+          0,
+          0,
+          790
+        ]
+      ],
+      "roc_auc_ovr": 1.0
+    },
+    "plain_mlp": {
+      "ALLOW": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "WARN": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "BLOCK": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "macro_f1": 1.0,
+      "confusion_matrix": [
+        [
+          1023,
+          0,
+          0
+        ],
+        [
+          0,
+          223,
+          0
+        ],
+        [
+          0,
+          0,
+          790
+        ]
+      ],
+      "roc_auc_ovr": 1.0
+    },
+    "kd_student_argmax": {
+      "ALLOW": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "WARN": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "BLOCK": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "macro_f1": 1.0,
+      "confusion_matrix": [
+        [
+          1023,
+          0,
+          0
+        ],
+        [
+          0,
+          223,
+          0
+        ],
+        [
+          0,
+          0,
+          790
+        ]
+      ],
+      "roc_auc_ovr": 1.0
+    },
+    "kd_student_thresholded": {
+      "ALLOW": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "WARN": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "BLOCK": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "macro_f1": 1.0,
+      "confusion_matrix": [
+        [
+          1023,
+          0,
+          0
+        ],
+        [
+          0,
+          223,
+          0
+        ],
+        [
+          0,
+          0,
+          790
+        ]
+      ],
+      "roc_auc_ovr": 1.0
+    }
+  },
+  "test_metrics": {
+    "catboost_teacher": {
+      "ALLOW": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "WARN": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "BLOCK": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "macro_f1": 1.0,
+      "confusion_matrix": [
+        [
+          1024,
+          0,
+          0
+        ],
+        [
+          0,
+          223,
+          0
+        ],
+        [
+          0,
+          0,
+          790
+        ]
+      ],
+      "roc_auc_ovr": 1.0
+    },
+    "plain_mlp": {
+      "ALLOW": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "WARN": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "BLOCK": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "macro_f1": 1.0,
+      "confusion_matrix": [
+        [
+          1024,
+          0,
+          0
+        ],
+        [
+          0,
+          223,
+          0
+        ],
+        [
+          0,
+          0,
+          790
+        ]
+      ],
+      "roc_auc_ovr": 1.0
+    },
+    "kd_student_argmax": {
+      "ALLOW": {
+        "precision": 0.9990243902439024,
+        "recall": 1.0,
+        "f1": 0.9995119570522206
+      },
+      "WARN": {
+        "precision": 1.0,
+        "recall": 0.9955156950672646,
+        "f1": 0.9977528089887641
+      },
+      "BLOCK": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "macro_f1": 0.999088255346995,
+      "confusion_matrix": [
+        [
+          1024,
+          0,
+          0
+        ],
+        [
+          1,
+          222,
+          0
+        ],
+        [
+          0,
+          0,
+          790
+        ]
+      ],
+      "roc_auc_ovr": 1.0
+    },
+    "kd_student_thresholded": {
+      "ALLOW": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "WARN": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "BLOCK": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "macro_f1": 1.0,
+      "confusion_matrix": [
+        [
+          1024,
+          0,
+          0
+        ],
+        [
+          0,
+          223,
+          0
+        ],
+        [
+          0,
+          0,
+          790
+        ]
+      ],
+      "roc_auc_ovr": 1.0
+    },
+    "kd_student_tflite": {
+      "ALLOW": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "WARN": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "BLOCK": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "macro_f1": 1.0,
+      "confusion_matrix": [
+        [
+          1024,
+          0,
+          0
+        ],
+        [
+          0,
+          223,
+          0
+        ],
+        [
+          0,
+          0,
+          790
+        ]
+      ],
+      "roc_auc_ovr": 1.0
+    }
+  },
+  "tflite": {
+    "path": "C:\\Users\\Redmi\\CascadeProjects\\windsurf-project\\scripts\\..\\app\\src\\main\\assets\\spam_model.tflite",
+    "bytes": 27684
+  },
+  "sanity": {
+    "samples": 200,
+    "max_abs_diff": 1.1920928955078125e-07,
+    "pass": true,
+    "atol": 0.0001
+  },
+  "warnings": [],
+  "run_dir": "C:\\Users\\Redmi\\CascadeProjects\\windsurf-project\\scripts\\..\\datasets\\ru\\reports\\kd_20260428-192304"
+}

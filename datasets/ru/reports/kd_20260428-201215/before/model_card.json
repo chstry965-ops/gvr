@@ -1,6 +1,6 @@
 {
-  "version": "kd-mlp-20260428-201216",
-  "created_at": "2026-04-28T20:12:16.611771",
+  "version": "kd-mlp-20260428-193812",
+  "created_at": "2026-04-28T19:38:12.822418",
   "feature_count": 32,
   "features": [
     "isContact",
@@ -42,22 +42,22 @@
     "WARN": 2230,
     "BLOCK": 7900
   },
-  "dataset_hash": "bdca983e0563cd8d4875e8870579c11a2c4b54069024ed2b383ba96d575ae088",
+  "dataset_hash": "3e915b8155b155c53cac5a899f7e9556bb40fa1a68b0e0af17a258036f6f6f4f",
   "best_model": "kd_student",
-  "block_precision": 0.9935483870967742,
-  "block_recall": 0.9746835443037974,
-  "roc_auc_ovr": 0.9979045744255776,
+  "block_precision": 0.9961340206185567,
+  "block_recall": 0.9784810126582278,
+  "roc_auc_ovr": 0.9973621278470196,
   "thresholds": {
-    "block_threshold": 0.45000000000000007,
+    "block_threshold": 0.43000000000000005,
     "warn_threshold": 0.1,
-    "block_precision": 0.9974358974358974,
-    "block_recall": 0.9848101265822785,
-    "block_f1": 0.9910828025477708,
-    "warn_f1": 0.9692982456140351
+    "block_precision": 0.9974391805377721,
+    "block_recall": 0.9860759493670886,
+    "block_f1": 0.991725015913431,
+    "warn_f1": 0.9714285714285715
   },
   "smote_applied": false,
   "kd": {
-    "T": 8.0,
+    "T": 4.0,
     "alpha": 0.5,
     "teacher": "catboost_multiclass",
     "teacher_train_per_class": 6000,
