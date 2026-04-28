@@ -241,6 +241,18 @@ def collect(args):
     run(cmd)
 
 
+def predict(args):
+    cmd = [str(PYTHON), 'scripts/spam_predict.py']
+    if args.cold:
+        cmd.append('--cold')
+    if args.show_features:
+        cmd.append('--show-features')
+    if args.json:
+        cmd.append('--json')
+    cmd += list(args.numbers)
+    run(cmd)
+
+
 def main():
     parser = argparse.ArgumentParser(description='SpamBlocker dev CLI')
     sub = parser.add_subparsers(dest='cmd', required=True)
@@ -301,6 +313,14 @@ def main():
     p.add_argument('--candidates', required=True)
     p.add_argument('--limit', type=int, default=100)
     p.set_defaults(func=collect)
+
+    p = sub.add_parser('predict', help='Прогон одного или нескольких номеров через TFLite-модель.')
+    p.add_argument('numbers', nargs='+', help='Номер(а) телефона.')
+    p.add_argument('--cold', action='store_true',
+                   help='Игнорировать lookup CSV; считать фичи как для неизвестного номера.')
+    p.add_argument('--show-features', action='store_true', help='Распечатать все 32 фичи.')
+    p.add_argument('--json', action='store_true', help='JSON-вывод вместо текстового.')
+    p.set_defaults(func=predict)
 
     args = parser.parse_args()
     args.func(args)

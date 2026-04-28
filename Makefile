@@ -1,4 +1,4 @@
-.PHONY: doctor build-dataset train export drift quality validate android-build status test clean help kd-train kd-train-fast
+.PHONY: doctor build-dataset train export drift quality validate android-build status test clean help kd-train kd-train-fast predict
 
 PYTHON ?= python
 CLI := $(PYTHON) tools/spam_cli.py
@@ -26,6 +26,9 @@ kd-train: ## Knowledge Distillation: CatBoost teacher → Keras MLP student → 
 
 kd-train-fast: ## KD without Optuna (stage1 grid only, ~9 runs)
 	$(CLI) kd-train --optuna-trials 0
+
+predict: ## Predict ALLOW/WARN/BLOCK for one or more numbers (NUMBER=+79991234567)
+	$(CLI) predict $(NUMBER)
 
 export: ## Export TFLite model
 	$(CLI) export --plots
