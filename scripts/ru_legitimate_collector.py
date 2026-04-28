@@ -1283,7 +1283,8 @@ def load_state(scraper: AsyncScraper):
 async def main():
     parser = argparse.ArgumentParser(description='Сбор легитимных номеров РФ')
     parser.add_argument('--cities', nargs='+', default=['msk', 'spb', 'ekb', 'kzn', 'nnov', 'rnd', 'ufa', 'krasnodar', 'voronezh', 'chelyabinsk'],
-                        help='Города (ключи: msk, spb, ekb, kzn, ...)'),
+                        help='Города (ключи: msk, spb, ekb, kzn, ...). '
+                             'Передай "all" чтобы взять все доступные города (32 для zoon, 16 для spravker).'),
     parser.add_argument('--profile', choices=['smart', 'broad', 'org', 'weak'], default='smart',
                         help='smart=сначала слабые/потом org, broad=всё, org=только организации, weak=только слабые категории')
     parser.add_argument('--concurrency', type=int, default=CONCURRENCY,
@@ -1306,8 +1307,13 @@ async def main():
                         help='Выходной CSV файл')
     args = parser.parse_args()
 
-    spravker_cities = {k: v for k, v in SPRAVKER_CITIES.items() if k in args.cities}
-    zoon_cities = {k: v for k, v in ZOON_CITIES.items() if k in args.cities}
+    if len(args.cities) == 1 and args.cities[0].lower() == 'all':
+        spravker_cities = dict(SPRAVKER_CITIES)
+        zoon_cities = dict(ZOON_CITIES)
+        args.cities = sorted(set(SPRAVKER_CITIES) | set(ZOON_CITIES))
+    else:
+        spravker_cities = {k: v for k, v in SPRAVKER_CITIES.items() if k in args.cities}
+        zoon_cities = {k: v for k, v in ZOON_CITIES.items() if k in args.cities}
 
     log.info(f"🚀 Starting legitimate number collector")
     log.info(f"  Cities: {args.cities}")
