@@ -15,6 +15,7 @@ class SpamModel(private val context: Context) {
 
     private var interpreter: Interpreter? = null
     private var isModelLoaded = false
+    private var thresholds: ModelCard.Thresholds? = null
 
     fun loadModel(): Boolean {
         return try {
@@ -23,6 +24,8 @@ class SpamModel(private val context: Context) {
                 setNumThreads(2)
             }
             interpreter = Interpreter(modelBuffer, options)
+            // Load thresholds from model_card.json (if present); falls back to argmax otherwise.
+            thresholds = ModelCard.load(context)?.thresholds
             isModelLoaded = true
             true
         } catch (e: Exception) {
@@ -56,15 +59,28 @@ class SpamModel(private val context: Context) {
             val warn = outputBuffer.getFloat()
             val block = outputBuffer.getFloat()
 
-            val maxIdx = listOf(allow, warn, block).indices.maxByOrNull { listOf(allow, warn, block)[it] } ?: 0
-            val confidence = listOf(allow, warn, block)[maxIdx]
+            val probs = listOf(allow, warn, block)
+            val maxIdx = probs.indices.maxByOrNull { probs[it] } ?: 0
 
-            val verdict = when (maxIdx) {
-                0 -> Verdict.ALLOW
-                1 -> Verdict.WARN
-                2 -> Verdict.BLOCK
-                else -> Verdict.ALLOW
+            // Apply per-class thresholds from model_card.json (when available);
+            // otherwise fall back to plain argmax.
+            val thr = thresholds
+            val verdict = if (thr != null) {
+                when {
+                    block >= thr.blockThreshold -> Verdict.BLOCK
+                    warn >= thr.warnThreshold -> Verdict.WARN
+                    else -> Verdict.ALLOW
+                }
+            } else {
+                when (maxIdx) {
+                    0 -> Verdict.ALLOW
+                    1 -> Verdict.WARN
+                    2 -> Verdict.BLOCK
+                    else -> Verdict.ALLOW
+                }
             }
+            // Confidence still tracks argmax probability so UI gauges keep meaning.
+            val confidence = probs[maxIdx]
 
             val score = (block * 100).toInt().coerceIn(0, 100)
             val level = when {

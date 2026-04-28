@@ -1,6 +1,6 @@
 param(
     [Parameter(Position=0)]
-    [ValidateSet('doctor','status','build-dataset','train','export','drift','quality','validate','android-build','collect')]
+    [ValidateSet('doctor','status','build-dataset','train','kd-train','export','drift','quality','validate','android-build','collect')]
     [string]$Command = 'doctor',
 
     [int]$SmokeSynthetic = 0,
@@ -10,7 +10,11 @@ param(
     [switch]$NoSmote,
     [int]$OptunaTrials = 0,
     [string]$DriftReference = '',
-    [switch]$Plots
+    [switch]$Plots,
+    [int]$TeacherTrainPerClass = 6000,
+    [int]$StudentTrainPerClass = 4000,
+    [switch]$PadWithSmote,
+    [int]$Seed = 42
 )
 
 $ErrorActionPreference = 'Stop'
@@ -33,6 +37,15 @@ if ($Command -in @('train','export')) {
 if ($Command -eq 'drift') {
     if ($DriftReference) { $argsList += @('--reference', $DriftReference) }
     if ($Plots) { $argsList += '--plots' }
+}
+if ($Command -eq 'kd-train') {
+    $argsList += @('--teacher-train-per-class', $TeacherTrainPerClass)
+    $argsList += @('--student-train-per-class', $StudentTrainPerClass)
+    if ($PSBoundParameters.ContainsKey('OptunaTrials')) { $argsList += @('--optuna-trials', $OptunaTrials) }
+    if ($PSBoundParameters.ContainsKey('MinBlockPrecision')) { $argsList += @('--min-block-precision', $MinBlockPrecision) }
+    if ($PadWithSmote) { $argsList += '--pad-with-smote' }
+    if ($AllowUnsafeExport) { $argsList += '--allow-unsafe-export' }
+    $argsList += @('--seed', $Seed)
 }
 
 & $Python @argsList
