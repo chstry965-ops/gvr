@@ -36,7 +36,7 @@ import shutil
 import sys
 import time
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -333,7 +333,21 @@ def teacher_soft_targets(teacher, X: np.ndarray, T: float) -> np.ndarray:
 # Keras student (subclass with KD train_step)
 # ---------------------------------------------------------------------------
 
-def build_student_model(hidden_sizes: Tuple[int, ...], dropout: float, T: float, alpha: float, lr: float):
+def feature_mask_indices(mask_features: Sequence[str]) -> List[int]:
+    """Превращает имена фич в индексы в векторе COMPACT_FEATURES (для маскировки во время обучения)."""
+    name_to_idx = {n: i for i, n in enumerate(COMPACT_FEATURES)}
+    out = []
+    for name in mask_features:
+        if name in name_to_idx:
+            out.append(name_to_idx[name])
+    return out
+
+
+def build_student_model(
+    hidden_sizes: Tuple[int, ...], dropout: float, T: float, alpha: float, lr: float,
+    *, weight_decay: float = 0.0, label_smoothing: float = 0.0,
+    mask_indices: Optional[List[int]] = None, mask_prob: float = 0.0,
+):
     """Construct KD-Keras model (training mode produces logits + KL/CE loss).
 
     Architecture:
@@ -344,24 +358,42 @@ def build_student_model(hidden_sizes: Tuple[int, ...], dropout: float, T: float,
 
     No BatchNorm: avoids fold-time errors during TFLite export and is unnecessary
     at this scale.
+
+    Optional regularizers (все без BatchNorm и без изменения архитектуры весов —
+    точно такая же [1, 32] -> [1, 3] экспортная модель для Android, это только при обучении):
+      - weight_decay: L2-регуляризация на ядра всех Dense (kernel_regularizer).
+      - label_smoothing: мягче хард-CE в KD-лоссе (0.05 → 5% массы размазывается по остальным классам).
+      - mask_indices + mask_prob: feature masking augmentation. С вероятностью mask_prob
+        на каждый row в батче обнуляются фичи из mask_indices. Это имитирует «неизвестный
+        номер» (inAllowlist=0, inBlacklist=0) и заставляет модель решать по остальным 30 фичам.
+        На инференсе (training=False) маскинга НЕТ — фичи идут как есть.
     """
     import tensorflow as tf
 
+    reg = tf.keras.regularizers.l2(weight_decay) if weight_decay and weight_decay > 0 else None
     inputs = tf.keras.Input(shape=(len(COMPACT_FEATURES),), name='features')
     h = inputs
     for i, units in enumerate(hidden_sizes[:-1]):
-        h = tf.keras.layers.Dense(units, activation='relu', name=f'dense_{i}')(h)
+        h = tf.keras.layers.Dense(units, activation='relu', kernel_regularizer=reg, name=f'dense_{i}')(h)
         h = tf.keras.layers.Dropout(dropout, name=f'drop_{i}')(h)
-    h = tf.keras.layers.Dense(hidden_sizes[-1], activation='relu', name=f'dense_{len(hidden_sizes) - 1}')(h)
-    logits = tf.keras.layers.Dense(NUM_CLASSES, activation=None, name='logits')(h)
+    h = tf.keras.layers.Dense(
+        hidden_sizes[-1], activation='relu', kernel_regularizer=reg,
+        name=f'dense_{len(hidden_sizes) - 1}',
+    )(h)
+    logits = tf.keras.layers.Dense(NUM_CLASSES, activation=None, kernel_regularizer=reg, name='logits')(h)
     backbone = tf.keras.Model(inputs, logits, name='student_backbone')
 
+    n_features = len(COMPACT_FEATURES)
+    mask_indices_t = tf.constant(mask_indices or [], dtype=tf.int32)
+    has_masking = bool(mask_indices) and mask_prob > 0.0
+
     class KDModel(tf.keras.Model):
-        def __init__(self, backbone, T, alpha):
+        def __init__(self, backbone, T, alpha, label_smoothing):
             super().__init__()
             self.backbone = backbone
             self.T = float(T)
             self.alpha = float(alpha)
+            self.label_smoothing = float(label_smoothing)
             self.ce_metric = tf.keras.metrics.Mean(name='ce')
             self.kd_metric = tf.keras.metrics.Mean(name='kd')
             self.acc_metric = tf.keras.metrics.SparseCategoricalAccuracy(name='acc')
@@ -369,25 +401,51 @@ def build_student_model(hidden_sizes: Tuple[int, ...], dropout: float, T: float,
         def call(self, x, training=False):
             return self.backbone(x, training=training)
 
+        def _maybe_mask(self, x):
+            """С вероятностью mask_prob обнуляет выбранные колонки для каждого row в батче."""
+            if not has_masking:
+                return x
+            batch = tf.shape(x)[0]
+            # Бернулли [batch] — хотим ли маскировать ряд.
+            mask_row = tf.cast(tf.random.uniform([batch], 0.0, 1.0) < mask_prob, tf.float32)  # [B]
+            # Индикатор колонки — 1 для mask_indices, 0 для остальных.
+            col_indicator = tf.scatter_nd(
+                tf.expand_dims(mask_indices_t, 1),
+                tf.ones_like(mask_indices_t, dtype=tf.float32),
+                shape=[n_features],
+            )  # [F]
+            # Маска = 1 - (mask_row ⊕ col_indicator).
+            full_mask = 1.0 - tf.expand_dims(mask_row, 1) * tf.expand_dims(col_indicator, 0)  # [B, F]
+            return x * full_mask
+
         def train_step(self, data):
             (x, y_hard), soft = data
+            x = self._maybe_mask(x)
             with tf.GradientTape() as tape:
                 student_logits = self.backbone(x, training=True)
-                # Hard CE
-                ce = tf.keras.losses.sparse_categorical_crossentropy(
-                    y_hard, student_logits, from_logits=True,
-                )
+                # Hard CE (с label smoothing если > 0).
+                if self.label_smoothing > 0.0:
+                    y_onehot = tf.one_hot(tf.cast(y_hard, tf.int32), NUM_CLASSES, dtype=tf.float32)
+                    y_smooth = y_onehot * (1.0 - self.label_smoothing) + self.label_smoothing / NUM_CLASSES
+                    log_p = tf.nn.log_softmax(student_logits, axis=-1)
+                    ce = -tf.reduce_sum(y_smooth * log_p, axis=-1)
+                else:
+                    ce = tf.keras.losses.sparse_categorical_crossentropy(
+                        y_hard, student_logits, from_logits=True,
+                    )
                 ce = tf.reduce_mean(ce)
                 # KD: KL(student/T || teacher_soft@T)
                 T = self.T
                 student_log_soft = tf.nn.log_softmax(student_logits / T, axis=-1)
-                # KL(P || Q) = sum P (log P - log Q); here P=teacher_soft, Q=student
                 teacher_soft = tf.cast(soft, tf.float32)
                 eps = 1e-9
                 teacher_log = tf.math.log(teacher_soft + eps)
                 kl = tf.reduce_sum(teacher_soft * (teacher_log - student_log_soft), axis=-1)
                 kl = tf.reduce_mean(kl)
-                loss = self.alpha * ce + (1.0 - self.alpha) * (T * T) * kl
+                kd_loss = self.alpha * ce + (1.0 - self.alpha) * (T * T) * kl
+                # Активируем L2-регуляризаторы Dense'ов.
+                reg_loss = tf.add_n(self.backbone.losses) if self.backbone.losses else 0.0
+                loss = kd_loss + reg_loss
             grads = tape.gradient(loss, self.trainable_variables)
             self.optimizer.apply_gradients(zip(grads, self.trainable_variables))
             self.ce_metric.update_state(ce)
@@ -409,7 +467,7 @@ def build_student_model(hidden_sizes: Tuple[int, ...], dropout: float, T: float,
             self.acc_metric.update_state(y_hard, logits)
             return {'loss': ce, 'acc': self.acc_metric.result()}
 
-    model = KDModel(backbone, T=T, alpha=alpha)
+    model = KDModel(backbone, T=T, alpha=alpha, label_smoothing=label_smoothing)
     model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=lr))
     return model, backbone
 
@@ -419,11 +477,17 @@ def train_student(
     X_val: np.ndarray, y_val: np.ndarray,
     *, T: float, alpha: float, hidden_sizes: Tuple[int, ...], dropout: float,
     lr: float, epochs: int, batch_size: int, patience: int, seed: int, verbose: int = 0,
+    weight_decay: float = 0.0, label_smoothing: float = 0.0,
+    mask_indices: Optional[List[int]] = None, mask_prob: float = 0.0,
 ):
     """Train one student with given hyperparams. Returns (backbone, history, best_val_acc)."""
     import tensorflow as tf
     set_global_seed(seed)
-    model, backbone = build_student_model(hidden_sizes, dropout, T, alpha, lr)
+    model, backbone = build_student_model(
+        hidden_sizes, dropout, T, alpha, lr,
+        weight_decay=weight_decay, label_smoothing=label_smoothing,
+        mask_indices=mask_indices, mask_prob=mask_prob,
+    )
 
     train_ds = tf.data.Dataset.from_tensor_slices(
         ((X_train.astype(np.float32), y_train.astype(np.int32)), soft_train.astype(np.float32))
@@ -553,6 +617,8 @@ def stage1_grid_search(
     *, hidden_sizes: Tuple[int, ...], dropout: float, lr: float,
     epochs: int, batch_size: int, patience: int, seed: int,
     Ts: List[float], alphas: List[float], min_block_precision: float, verbose: int = 0,
+    weight_decay: float = 0.0, label_smoothing: float = 0.0,
+    mask_indices: Optional[List[int]] = None, mask_prob: float = 0.0,
 ) -> Dict:
     """Grid search over (T, alpha). Returns best config + all results."""
     results = []
@@ -568,6 +634,8 @@ def stage1_grid_search(
                 T=T, alpha=alpha, hidden_sizes=hidden_sizes, dropout=dropout,
                 lr=lr, epochs=epochs, batch_size=batch_size, patience=patience,
                 seed=seed, verbose=verbose,
+                weight_decay=weight_decay, label_smoothing=label_smoothing,
+                mask_indices=mask_indices, mask_prob=mask_prob,
             )
             proba_val = proba_from_backbone(backbone, X_val)
             metrics = evaluate_proba(y_val, proba_val)
@@ -593,6 +661,8 @@ def stage2_optuna_search(
     *, T: float, alpha: float,
     n_trials: int, epochs: int, batch_size: int, patience: int, seed: int,
     min_block_precision: float, verbose: int = 0,
+    weight_decay: float = 0.0, label_smoothing: float = 0.0,
+    mask_indices: Optional[List[int]] = None, mask_prob: float = 0.0,
 ) -> Dict:
     """Optuna over (lr, dropout, hidden_sizes) at fixed T, alpha. Returns best config."""
     try:
@@ -617,6 +687,8 @@ def stage2_optuna_search(
             T=T, alpha=alpha, hidden_sizes=hidden_sizes, dropout=dropout,
             lr=lr, epochs=epochs, batch_size=batch_size, patience=patience,
             seed=seed, verbose=verbose,
+            weight_decay=weight_decay, label_smoothing=label_smoothing,
+            mask_indices=mask_indices, mask_prob=mask_prob,
         )
         proba_val = proba_from_backbone(backbone, X_val)
         metrics = evaluate_proba(y_val, proba_val)
@@ -643,21 +715,41 @@ def stage2_optuna_search(
 # Plain MLP baseline (no KD) for comparison
 # ---------------------------------------------------------------------------
 
+def _apply_mask_numpy(X: np.ndarray, mask_indices: List[int], mask_prob: float, seed: int) -> np.ndarray:
+    """Offline-версия feature masking для plain MLP: для каждой строки с вероятностью mask_prob
+    обнуляем колонки из mask_indices. Это эквивалентно per-batch random masking, но проще
+    в keras.Model.fit без subclassing."""
+    if not mask_indices or mask_prob <= 0.0:
+        return X
+    rng = np.random.RandomState(seed)
+    Xm = X.copy()
+    n = len(X)
+    rows_to_mask = rng.uniform(0.0, 1.0, size=n) < mask_prob
+    Xm[np.ix_(rows_to_mask, mask_indices)] = 0.0
+    return Xm
+
+
 def train_plain_mlp(
     X_train: np.ndarray, y_train: np.ndarray,
     X_val: np.ndarray, y_val: np.ndarray,
     *, hidden_sizes: Tuple[int, ...], dropout: float, lr: float,
     epochs: int, batch_size: int, patience: int, seed: int, verbose: int = 0,
+    weight_decay: float = 0.0,
+    mask_indices: Optional[List[int]] = None, mask_prob: float = 0.0,
 ):
     import tensorflow as tf
     set_global_seed(seed)
+    reg = tf.keras.regularizers.l2(weight_decay) if weight_decay and weight_decay > 0 else None
     inputs = tf.keras.Input(shape=(len(COMPACT_FEATURES),), name='features')
     h = inputs
     for i, units in enumerate(hidden_sizes[:-1]):
-        h = tf.keras.layers.Dense(units, activation='relu', name=f'dense_{i}')(h)
+        h = tf.keras.layers.Dense(units, activation='relu', kernel_regularizer=reg, name=f'dense_{i}')(h)
         h = tf.keras.layers.Dropout(dropout, name=f'drop_{i}')(h)
-    h = tf.keras.layers.Dense(hidden_sizes[-1], activation='relu', name=f'dense_{len(hidden_sizes) - 1}')(h)
-    logits = tf.keras.layers.Dense(NUM_CLASSES, activation=None, name='logits')(h)
+    h = tf.keras.layers.Dense(
+        hidden_sizes[-1], activation='relu', kernel_regularizer=reg,
+        name=f'dense_{len(hidden_sizes) - 1}',
+    )(h)
+    logits = tf.keras.layers.Dense(NUM_CLASSES, activation=None, kernel_regularizer=reg, name='logits')(h)
     model = tf.keras.Model(inputs, logits)
     model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=lr),
@@ -667,8 +759,9 @@ def train_plain_mlp(
     es = tf.keras.callbacks.EarlyStopping(
         monitor='val_acc', mode='max', patience=patience, restore_best_weights=True,
     )
+    X_aug = _apply_mask_numpy(X_train.astype(np.float32), mask_indices or [], mask_prob, seed)
     model.fit(
-        X_train.astype(np.float32), y_train.astype(np.int32),
+        X_aug, y_train.astype(np.int32),
         validation_data=(X_val.astype(np.float32), y_val.astype(np.int32)),
         epochs=epochs, batch_size=batch_size, callbacks=[es], verbose=verbose,
     )
@@ -902,16 +995,44 @@ def write_kd_report(report: Dict, out_dir: str) -> None:
     with open(os.path.join(out_dir, 'kd_report.md'), 'w', encoding='utf-8') as f:
         f.write('\n'.join(md_lines))
 
-    html_rows = ''
-    for name, m in report.get('test_metrics', {}).items():
-        html_rows += (
-            f'<tr><td>{name}</td>'
-            f'<td>{m.get("macro_f1", 0):.4f}</td>'
-            f'<td>{m.get("BLOCK", {}).get("precision", 0):.4f}</td>'
-            f'<td>{m.get("BLOCK", {}).get("recall", 0):.4f}</td>'
-            f'<td>{m.get("BLOCK", {}).get("f1", 0):.4f}</td>'
-            f'<td>{m.get("WARN", {}).get("f1", 0):.4f}</td>'
-            f'<td>{m.get("roc_auc_ovr") if m.get("roc_auc_ovr") is not None else "—"}</td></tr>'
+    def _rows(metrics_dict: Dict) -> str:
+        rows = ''
+        for name, m in metrics_dict.items():
+            rows += (
+                f'<tr><td>{name}</td>'
+                f'<td>{m.get("macro_f1", 0):.4f}</td>'
+                f'<td>{m.get("BLOCK", {}).get("precision", 0):.4f}</td>'
+                f'<td>{m.get("BLOCK", {}).get("recall", 0):.4f}</td>'
+                f'<td>{m.get("BLOCK", {}).get("f1", 0):.4f}</td>'
+                f'<td>{m.get("WARN", {}).get("f1", 0):.4f}</td>'
+                f'<td>{m.get("roc_auc_ovr") if m.get("roc_auc_ovr") is not None else "—"}</td></tr>'
+            )
+        return rows
+
+    html_rows = _rows(report.get('test_metrics', {}))
+    unknown_rows = _rows(report.get('test_metrics_unknown_slice') or {})
+    n_unknown = report.get('unknown_slice_size', 0)
+    n_known = report.get('known_slice_size', 0)
+    train_cfg = report.get('training_config', {})
+    train_cfg_html = (
+        f'<p><b>Training config</b>: '
+        f'use_full_train={train_cfg.get("use_full_train")}, '
+        f'mask_features={train_cfg.get("mask_features")}, '
+        f'feature_mask_prob={train_cfg.get("feature_mask_prob")}, '
+        f'weight_decay={train_cfg.get("weight_decay")}, '
+        f'label_smoothing={train_cfg.get("label_smoothing")}</p>'
+        if train_cfg else ''
+    )
+    unknown_section = ''
+    if unknown_rows:
+        unknown_section = (
+            f'<h2>Comparison on UNKNOWN slice ({n_unknown}/{n_unknown + n_known} rows; '
+            'inAllowlist=0 AND inBlacklist=0)</h2>'
+            '<p>Это «честный» срез: только номера, у которых нет ни whitelist-, ни blacklist-подсказок. '
+            'Так модель работает на свежих, ранее невиданных номерах в проде.</p>'
+            '<table><tr><th>Model</th><th>macro F1</th><th>BLOCK P</th><th>BLOCK R</th>'
+            '<th>BLOCK F1</th><th>WARN F1</th><th>ROC-AUC OVR</th></tr>'
+            f'{unknown_rows}</table>'
         )
     with open(os.path.join(out_dir, 'kd_report.html'), 'w', encoding='utf-8') as f:
         f.write(
@@ -924,10 +1045,12 @@ def write_kd_report(report: Dict, out_dir: str) -> None:
             f'<p><b>Dataset</b>: {report["data"]}</p>'
             f'<p><b>Rows</b>: {report["rows"]} | <b>Class counts</b>: {report["class_counts"]}</p>'
             f'<p><b>Best T</b>: {report.get("kd", {}).get("T")}, <b>α</b>: {report.get("kd", {}).get("alpha")}</p>'
-            '<h2>Comparison (test set)</h2>'
+            f'{train_cfg_html}'
+            '<h2>Comparison (full test set)</h2>'
             '<table><tr><th>Model</th><th>macro F1</th><th>BLOCK P</th><th>BLOCK R</th>'
             '<th>BLOCK F1</th><th>WARN F1</th><th>ROC-AUC OVR</th></tr>'
             f'{html_rows}</table>'
+            f'{unknown_section}'
             f'<h2>Export</h2><p>TFLite: {report.get("tflite", {}).get("path")} '
             f'({report.get("tflite", {}).get("bytes")} bytes)</p>'
             f'<p>Sanity max|p_keras - p_tflite| = {report.get("sanity", {}).get("max_abs_diff")}'
@@ -982,6 +1105,22 @@ def main() -> int:
                     help='Допустимое расхождение между Keras FP32 и TFLite. Для quantize=True имеет смысл 5e-3.')
     ap.add_argument('--verbose', type=int, default=0, help='Keras verbose (0/1/2).')
 
+    # Новые флаги: использовать весь трейн + feature masking + регуляризация.
+    ap.add_argument('--use-full-train', action='store_true', default=True,
+                    help='Использовать все доступные train-строки для teacher и student (по умолчанию включено). '
+                         'Альтернатива — --no-use-full-train и стратифицированный sample по --teacher/student-train-per-class.')
+    ap.add_argument('--no-use-full-train', dest='use_full_train', action='store_false',
+                    help='Отключить «весь трейн», вернуться к старой логике 6k+6k / 4k+4k.')
+    ap.add_argument('--mask-features', type=str, default='inAllowlist,inBlacklist',
+                    help='Список фич (через запятую), которые с вероятностью --feature-mask-prob будут обнуляться при обучении. '
+                         'По умолчанию — две list-подсказки (inAllowlist/inBlacklist).')
+    ap.add_argument('--feature-mask-prob', type=float, default=0.3,
+                    help='Вероятность маскировать выбранные фичи для ряда в батче (0 = отключить).')
+    ap.add_argument('--weight-decay', type=float, default=1e-4,
+                    help='L2 весовых ядер (kernel_regularizer). 0 = отключено.')
+    ap.add_argument('--label-smoothing', type=float, default=0.05,
+                    help='Label smoothing в хард-CE части KD-лосса (0 = отключено).')
+
     args = ap.parse_args()
 
     set_global_seed(args.seed)
@@ -1002,32 +1141,53 @@ def main() -> int:
     )
     print(f'  split: train={len(train_idx)}, val={len(val_idx)}, test={len(test_idx)}')
 
-    # --- Teacher train sampling ---
-    teacher_idx, teacher_counts, warns_t = sample_teacher_train(
-        train_idx, y,
-        legit_target=args.teacher_train_per_class,
-        spam_target=args.teacher_train_per_class,
-        seed=args.seed,
-    )
-    print(f'  teacher train sample: {len(teacher_idx)} rows {teacher_counts}')
-    for w in warns_t:
-        print(f'    WARN: {w}')
+    # --- Teacher / student train sampling ---
+    if args.use_full_train:
+        teacher_idx = train_idx
+        student_idx = train_idx
+        teacher_counts = class_counts(y[teacher_idx])
+        student_counts = class_counts(y[student_idx])
+        warns_t: List[str] = []
+        warns_s: List[str] = []
+        print(f'  teacher train: ALL {len(teacher_idx)} rows {teacher_counts} («full-train» mode)')
+        print(f'  student train: ALL {len(student_idx)} rows {student_counts} («full-train» mode)')
+    else:
+        teacher_idx, teacher_counts, warns_t = sample_teacher_train(
+            train_idx, y,
+            legit_target=args.teacher_train_per_class,
+            spam_target=args.teacher_train_per_class,
+            seed=args.seed,
+        )
+        print(f'  teacher train sample: {len(teacher_idx)} rows {teacher_counts}')
+        for w in warns_t:
+            print(f'    WARN: {w}')
 
-    # --- Student train (subset of teacher train) ---
-    student_idx, student_counts, warns_s = sample_student_train_subset(
-        teacher_idx, y,
-        legit_target=args.student_train_per_class,
-        spam_target=args.student_train_per_class,
-        seed=args.seed,
-    )
-    print(f'  student train sample: {len(student_idx)} rows {student_counts}')
-    for w in warns_s:
-        print(f'    WARN: {w}')
+        student_idx, student_counts, warns_s = sample_student_train_subset(
+            teacher_idx, y,
+            legit_target=args.student_train_per_class,
+            spam_target=args.student_train_per_class,
+            seed=args.seed,
+        )
+        print(f'  student train sample: {len(student_idx)} rows {student_counts}')
+        for w in warns_s:
+            print(f'    WARN: {w}')
 
     X_teacher, y_teacher = X[teacher_idx], y[teacher_idx]
     X_student, y_student = X[student_idx], y[student_idx]
     X_val, y_val = X[val_idx], y[val_idx]
     X_test, y_test = X[test_idx], y[test_idx]
+
+    # --- Feature masking config (вынуждённое «забывание» подсказок) ---
+    mask_feature_names: List[str] = [s.strip() for s in args.mask_features.split(',') if s.strip()]
+    mask_indices = feature_mask_indices(mask_feature_names)
+    mask_prob = float(args.feature_mask_prob) if mask_indices else 0.0
+    if mask_indices and mask_prob > 0:
+        print(f'  feature masking: prob={mask_prob:.2f} on '
+              f'{[COMPACT_FEATURES[i] for i in mask_indices]} (training only)')
+    else:
+        print(f'  feature masking: OFF (mask_features={mask_feature_names}, mask_prob={mask_prob})')
+    if args.weight_decay > 0 or args.label_smoothing > 0:
+        print(f'  regularization: weight_decay={args.weight_decay:g} label_smoothing={args.label_smoothing:g}')
 
     smote_info: Dict = {}
     if args.pad_with_smote:
@@ -1065,6 +1225,8 @@ def main() -> int:
         hidden_sizes=(64, 48, 24), dropout=0.2, lr=1e-3,
         epochs=args.student_epochs, batch_size=args.student_batch,
         patience=args.student_patience, seed=args.seed, verbose=args.verbose,
+        weight_decay=args.weight_decay,
+        mask_indices=mask_indices, mask_prob=mask_prob,
     )
     print(f'  done in {time.time() - t0:.1f}s')
 
@@ -1089,6 +1251,8 @@ def main() -> int:
         patience=args.student_patience, seed=args.seed,
         Ts=args.T_grid, alphas=args.alpha_grid,
         min_block_precision=args.min_block_precision, verbose=args.verbose,
+        weight_decay=args.weight_decay, label_smoothing=args.label_smoothing,
+        mask_indices=mask_indices, mask_prob=mask_prob,
     )
     best_T = stage1['best']['T']
     best_alpha = stage1['best']['alpha']
@@ -1109,6 +1273,8 @@ def main() -> int:
             epochs=args.student_epochs, batch_size=args.student_batch,
             patience=args.student_patience, seed=args.seed,
             min_block_precision=args.min_block_precision, verbose=args.verbose,
+            weight_decay=args.weight_decay, label_smoothing=args.label_smoothing,
+            mask_indices=mask_indices, mask_prob=mask_prob,
         )
         bp = stage2.get('best_params', {})
         if bp:
@@ -1127,6 +1293,8 @@ def main() -> int:
         T=best_T, alpha=best_alpha, hidden_sizes=best_hidden, dropout=best_dropout,
         lr=best_lr, epochs=args.student_epochs, batch_size=args.student_batch,
         patience=args.student_patience, seed=args.seed, verbose=args.verbose,
+        weight_decay=args.weight_decay, label_smoothing=args.label_smoothing,
+        mask_indices=mask_indices, mask_prob=mask_prob,
     )
     proba_val = proba_from_backbone(final_backbone, X_val)
     proba_test = proba_from_backbone(final_backbone, X_test)
@@ -1169,6 +1337,39 @@ def main() -> int:
     tflite_proba_test = tflite_predict(args.tflite_output, X_test)
     tflite_metrics_test = evaluate_proba(y_test, tflite_proba_test, thresholds=thresholds)
 
+    # --- Unknown-numbers slice: rows where both list-flags = 0 ---
+    # Это «честное» число: метрики на номерах, у которых нет подсказок ни от whitelist, ни от blacklist.
+    # Именно так модель работает в проде на свежих, неизвестных номерах.
+    in_allow_idx = COMPACT_FEATURES.index('inAllowlist')
+    in_block_idx = COMPACT_FEATURES.index('inBlacklist')
+    unknown_mask = (X_test[:, in_allow_idx] == 0.0) & (X_test[:, in_block_idx] == 0.0)
+    n_unknown = int(unknown_mask.sum())
+    test_metrics_unknown: Dict = {}
+    test_metrics_known: Dict = {}
+    if n_unknown > 0:
+        unknown_counts = class_counts(y_test[unknown_mask])
+        print(f'\n=== Unknown-numbers slice (inAllowlist=0 AND inBlacklist=0) ===')
+        print(f'  n={n_unknown}/{len(y_test)} rows, classes={unknown_counts}')
+        test_metrics_unknown = {
+            'catboost_teacher': evaluate_proba(y_test[unknown_mask], teacher_proba_test[unknown_mask]),
+            'plain_mlp': evaluate_proba(y_test[unknown_mask], plain_proba(X_test[unknown_mask])),
+            'kd_student_argmax': evaluate_proba(y_test[unknown_mask], proba_test[unknown_mask]),
+            'kd_student_thresholded': evaluate_proba(
+                y_test[unknown_mask], proba_test[unknown_mask], thresholds=thresholds,
+            ),
+            'kd_student_tflite': evaluate_proba(
+                y_test[unknown_mask], tflite_proba_test[unknown_mask], thresholds=thresholds,
+            ),
+        }
+    known_mask = ~unknown_mask
+    n_known = int(known_mask.sum())
+    if n_known > 0 and n_unknown > 0:
+        test_metrics_known = {
+            'kd_student_tflite': evaluate_proba(
+                y_test[known_mask], tflite_proba_test[known_mask], thresholds=thresholds,
+            ),
+        }
+
     # --- Compose final report ---
     report = {
         'created_at': datetime.now().isoformat(),
@@ -1207,6 +1408,18 @@ def main() -> int:
             'kd_student_thresholded': student_metrics_test,
             'kd_student_tflite': tflite_metrics_test,
         },
+        'test_metrics_unknown_slice': test_metrics_unknown,
+        'test_metrics_known_slice': test_metrics_known,
+        'unknown_slice_size': n_unknown,
+        'known_slice_size': len(y_test) - n_unknown,
+        'training_config': {
+            'use_full_train': bool(args.use_full_train),
+            'mask_features': mask_feature_names,
+            'mask_indices': mask_indices,
+            'feature_mask_prob': float(mask_prob),
+            'weight_decay': float(args.weight_decay),
+            'label_smoothing': float(args.label_smoothing),
+        },
         'tflite': {'path': args.tflite_output, 'bytes': export_info['bytes']},
         'sanity': sanity,
         'warnings': warns_t + warns_s + ([smote_info.get('reason')] if smote_info.get('reason') else []),
@@ -1219,7 +1432,7 @@ def main() -> int:
     print(f'       tflite:  {args.tflite_output}')
     print(f'       card:    {args.model_card_output}')
 
-    print('\n=== Test metrics summary ===')
+    print('\n=== Test metrics summary (full test) ===')
     for name, m in report['test_metrics'].items():
         print(
             f'  {name:<28s} macroF1={m["macro_f1"]:.4f} '
@@ -1228,6 +1441,17 @@ def main() -> int:
             f'F1={m["BLOCK"]["f1"]:.3f} '
             f'WARN F1={m["WARN"]["f1"]:.3f}'
         )
+    if test_metrics_unknown:
+        print(f'\n=== Test metrics on UNKNOWN slice ({n_unknown}/{len(y_test)} rows; '
+              f'inAllowlist=0 AND inBlacklist=0) ===')
+        for name, m in test_metrics_unknown.items():
+            print(
+                f'  {name:<28s} macroF1={m["macro_f1"]:.4f} '
+                f'BLOCK P={m["BLOCK"]["precision"]:.3f} '
+                f'R={m["BLOCK"]["recall"]:.3f} '
+                f'F1={m["BLOCK"]["f1"]:.3f} '
+                f'WARN F1={m["WARN"]["f1"]:.3f}'
+            )
     return 0
 
 
