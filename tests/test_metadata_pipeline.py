@@ -28,20 +28,32 @@ class TestFeatureCount:
 
 class TestCompactFeatureVector:
     def test_has_all_features(self):
+        # inBlacklist теперь отражает metadata, а не label (был leakage).
         features = compact_feature_vector(
             '+79001234567', 'BLOCK',
             {'negative_count': 10, 'positive_count': 0, 'review_count': 10,
-             'categories': 'мошенничество', 'source_confidence': 0.9, 'is_valid_ru_range': True}
+             'categories': 'мошенничество', 'source_confidence': 0.9, 'is_valid_ru_range': True,
+             'inBlacklist': True}
         )
         assert list(features.keys()) == COMPACT_FEATURES
         assert features['inBlacklist'] == 1.0
         assert features['reputationScore'] > 0.5
 
+    def test_label_does_not_set_inblacklist(self):
+        # Регресс-тест на фикс leakage: BLOCK label без metadata.inBlacklist => inBlacklist=0.
+        features = compact_feature_vector(
+            '+79001234567', 'BLOCK',
+            {'negative_count': 10, 'review_count': 10, 'categories': 'мошенничество'}
+        )
+        assert features['inBlacklist'] == 0.0
+        assert features['inAllowlist'] == 0.0
+
     def test_allow_label(self):
         features = compact_feature_vector(
             '+78005553535', 'ALLOW',
             {'negative_count': 0, 'positive_count': 5, 'review_count': 5,
-             'categories': 'банк', 'source_confidence': 0.9, 'is_valid_ru_range': True}
+             'categories': 'банк', 'source_confidence': 0.9, 'is_valid_ru_range': True,
+             'inAllowlist': True}
         )
         assert features['inAllowlist'] == 1.0
         assert features['inBlacklist'] == 0.0

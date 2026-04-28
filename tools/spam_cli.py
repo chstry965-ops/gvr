@@ -136,6 +136,25 @@ def train(args):
     run(cmd)
 
 
+def kd_train(args):
+    cmd = [str(PYTHON), 'scripts/train_kd_distillation.py']
+    if args.teacher_train_per_class is not None:
+        cmd += ['--teacher-train-per-class', str(args.teacher_train_per_class)]
+    if args.student_train_per_class is not None:
+        cmd += ['--student-train-per-class', str(args.student_train_per_class)]
+    if args.optuna_trials is not None:
+        cmd += ['--optuna-trials', str(args.optuna_trials)]
+    if args.min_block_precision is not None:
+        cmd += ['--min-block-precision', str(args.min_block_precision)]
+    if args.pad_with_smote:
+        cmd.append('--pad-with-smote')
+    if args.allow_unsafe_export:
+        cmd.append('--allow-unsafe-export')
+    if args.seed is not None:
+        cmd += ['--seed', str(args.seed)]
+    run(cmd)
+
+
 def export(args):
     header('Export TFLite model')
     cmd = [str(PYTHON), 'scripts/train_ru_metadata_models.py', '--export-tflite']
@@ -222,6 +241,18 @@ def collect(args):
     run(cmd)
 
 
+def predict(args):
+    cmd = [str(PYTHON), 'scripts/spam_predict.py']
+    if args.cold:
+        cmd.append('--cold')
+    if args.show_features:
+        cmd.append('--show-features')
+    if args.json:
+        cmd.append('--json')
+    cmd += list(args.numbers)
+    run(cmd)
+
+
 def main():
     parser = argparse.ArgumentParser(description='SpamBlocker dev CLI')
     sub = parser.add_subparsers(dest='cmd', required=True)
@@ -248,6 +279,21 @@ def main():
     p.add_argument('--plots', action='store_true')
     p.set_defaults(func=export)
 
+    p = sub.add_parser('kd-train', help='Knowledge Distillation: CatBoost teacher → Keras MLP student → TFLite')
+    p.add_argument('--teacher-train-per-class', type=int, default=6000,
+                   help='На скольких примерах каждого класса обучается teacher (legit + spam).')
+    p.add_argument('--student-train-per-class', type=int, default=4000,
+                   help='Подвыборка из teacher train для student.')
+    p.add_argument('--optuna-trials', type=int, default=20,
+                   help='Optuna trials в stage2 (lr/dropout/hidden). 0=пропустить.')
+    p.add_argument('--min-block-precision', type=float, default=0.85)
+    p.add_argument('--pad-with-smote', action='store_true',
+                   help='Добивать teacher train SMOTE-ом до целевых цифр при нехватке данных.')
+    p.add_argument('--allow-unsafe-export', action='store_true',
+                   help='Экспортировать .tflite даже при провале sanity check.')
+    p.add_argument('--seed', type=int, default=42)
+    p.set_defaults(func=kd_train)
+
     p = sub.add_parser('drift')
     p.add_argument('--reference', type=str, required=True, help='Production CSV to compare against')
     p.add_argument('--plots', action='store_true')
@@ -267,6 +313,14 @@ def main():
     p.add_argument('--candidates', required=True)
     p.add_argument('--limit', type=int, default=100)
     p.set_defaults(func=collect)
+
+    p = sub.add_parser('predict', help='Прогон одного или нескольких номеров через TFLite-модель.')
+    p.add_argument('numbers', nargs='+', help='Номер(а) телефона.')
+    p.add_argument('--cold', action='store_true',
+                   help='Игнорировать lookup CSV; считать фичи как для неизвестного номера.')
+    p.add_argument('--show-features', action='store_true', help='Распечатать все 32 фичи.')
+    p.add_argument('--json', action='store_true', help='JSON-вывод вместо текстового.')
+    p.set_defaults(func=predict)
 
     args = parser.parse_args()
     args.func(args)

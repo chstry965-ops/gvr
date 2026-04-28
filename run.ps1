@@ -1,6 +1,6 @@
 param(
     [Parameter(Position=0)]
-    [ValidateSet('doctor','status','build-dataset','train','export','drift','quality','validate','android-build','collect')]
+    [ValidateSet('doctor','status','build-dataset','train','kd-train','export','drift','quality','validate','android-build','collect','predict')]
     [string]$Command = 'doctor',
 
     [int]$SmokeSynthetic = 0,
@@ -10,7 +10,16 @@ param(
     [switch]$NoSmote,
     [int]$OptunaTrials = 0,
     [string]$DriftReference = '',
-    [switch]$Plots
+    [switch]$Plots,
+    [int]$TeacherTrainPerClass = 6000,
+    [int]$StudentTrainPerClass = 4000,
+    [switch]$PadWithSmote,
+    [int]$Seed = 42,
+    [switch]$Cold,
+    [switch]$ShowFeatures,
+    [switch]$AsJson,
+    [Parameter(ValueFromRemainingArguments=$true)]
+    [string[]]$Numbers
 )
 
 $ErrorActionPreference = 'Stop'
@@ -33,6 +42,25 @@ if ($Command -in @('train','export')) {
 if ($Command -eq 'drift') {
     if ($DriftReference) { $argsList += @('--reference', $DriftReference) }
     if ($Plots) { $argsList += '--plots' }
+}
+if ($Command -eq 'kd-train') {
+    $argsList += @('--teacher-train-per-class', $TeacherTrainPerClass)
+    $argsList += @('--student-train-per-class', $StudentTrainPerClass)
+    if ($PSBoundParameters.ContainsKey('OptunaTrials')) { $argsList += @('--optuna-trials', $OptunaTrials) }
+    if ($PSBoundParameters.ContainsKey('MinBlockPrecision')) { $argsList += @('--min-block-precision', $MinBlockPrecision) }
+    if ($PadWithSmote) { $argsList += '--pad-with-smote' }
+    if ($AllowUnsafeExport) { $argsList += '--allow-unsafe-export' }
+    $argsList += @('--seed', $Seed)
+}
+if ($Command -eq 'predict') {
+    if (-not $Numbers -or $Numbers.Count -eq 0) {
+        Write-Error "Usage: .\run.ps1 predict <number> [<number> ...] [-Cold] [-ShowFeatures] [-AsJson]"
+        exit 2
+    }
+    if ($Cold) { $argsList += '--cold' }
+    if ($ShowFeatures) { $argsList += '--show-features' }
+    if ($AsJson) { $argsList += '--json' }
+    $argsList += $Numbers
 }
 
 & $Python @argsList
