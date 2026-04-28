@@ -705,19 +705,29 @@ def _make_serving_fn(backbone):
     return serving_fn
 
 
-def export_tflite(backbone, out_path: str) -> Dict:
-    """Export backbone to a float32 TFLite file with [1, N] input and [1, 3] softmax output.
+def export_tflite(backbone, out_path: str, *, quantize: bool = False) -> Dict:
+    """Export backbone to a TFLite file with [1, N] input and [1, 3] softmax output.
 
     Tries three converter paths in order — first that succeeds wins:
       1. from_concrete_functions(serving_fn) — most stable on Keras 3.
       2. from_keras_model(export_model)      — classic path.
       3. from_saved_model(SavedModel dir)    — last resort.
+
+    By default produces a pure FP32 model (no optimizations). Pass quantize=True
+    to enable dynamic-range quantization (weights -> int8, compute in float),
+    which reduces .tflite size ~4x but introduces ~1e-3 numerical drift and
+    will fail the FP32 sanity check.
     """
     import tensorflow as tf
     import tempfile
 
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     export_model = build_export_model(backbone)
+
+    def apply_opts(conv):
+        if quantize:
+            conv.optimizations = [tf.lite.Optimize.DEFAULT]
+        return conv
 
     errors: List[str] = []
     tflite_bytes: Optional[bytes] = None
@@ -726,8 +736,7 @@ def export_tflite(backbone, out_path: str) -> Dict:
     try:
         serving_fn = _make_serving_fn(backbone)
         concrete = serving_fn.get_concrete_function()
-        converter = tf.lite.TFLiteConverter.from_concrete_functions([concrete])
-        converter.optimizations = [tf.lite.Optimize.DEFAULT]
+        converter = apply_opts(tf.lite.TFLiteConverter.from_concrete_functions([concrete]))
         tflite_bytes = converter.convert()
     except Exception as e:
         errors.append(f'from_concrete_functions: {type(e).__name__}: {e}')
@@ -735,8 +744,7 @@ def export_tflite(backbone, out_path: str) -> Dict:
     # Path 2: keras model directly
     if tflite_bytes is None:
         try:
-            converter = tf.lite.TFLiteConverter.from_keras_model(export_model)
-            converter.optimizations = [tf.lite.Optimize.DEFAULT]
+            converter = apply_opts(tf.lite.TFLiteConverter.from_keras_model(export_model))
             tflite_bytes = converter.convert()
         except Exception as e:
             errors.append(f'from_keras_model: {type(e).__name__}: {e}')
@@ -750,8 +758,7 @@ def export_tflite(backbone, out_path: str) -> Dict:
                     backbone, tmpdir,
                     signatures={'serving_default': serving_fn.get_concrete_function()},
                 )
-                converter = tf.lite.TFLiteConverter.from_saved_model(tmpdir)
-                converter.optimizations = [tf.lite.Optimize.DEFAULT]
+                converter = apply_opts(tf.lite.TFLiteConverter.from_saved_model(tmpdir))
                 tflite_bytes = converter.convert()
         except Exception as e:
             errors.append(f'from_saved_model: {type(e).__name__}: {e}')
@@ -969,6 +976,10 @@ def main() -> int:
                     help='Минимально допустимая BLOCK precision при threshold tuning.')
     ap.add_argument('--allow-unsafe-export', action='store_true',
                     help='Экспортировать .tflite даже если sanity check проваливается.')
+    ap.add_argument('--quantize', action='store_true',
+                    help='Dynamic-range int8 quantization для весов (~4x меньше .tflite, ~1e-3 numerical drift). По умолчанию выключено: Android ждёт чистый FP32.')
+    ap.add_argument('--sanity-atol', type=float, default=1e-4,
+                    help='Допустимое расхождение между Keras FP32 и TFLite. Для quantize=True имеет смысл 5e-3.')
     ap.add_argument('--verbose', type=int, default=0, help='Keras verbose (0/1/2).')
 
     args = ap.parse_args()
@@ -1139,12 +1150,12 @@ def main() -> int:
 
     # --- Export TFLite ---
     print('\nExporting TFLite...')
-    export_info = export_tflite(final_backbone, args.tflite_output)
+    export_info = export_tflite(final_backbone, args.tflite_output, quantize=args.quantize)
     print(f'  wrote {export_info["bytes"]} bytes -> {export_info["path"]}')
 
     # --- Sanity check ---
     sanity = sanity_check_export(
-        export_info['export_model'], args.tflite_output, X_test, atol=1e-4,
+        export_info['export_model'], args.tflite_output, X_test, atol=args.sanity_atol,
     )
     print(f'  sanity: max_abs_diff={sanity["max_abs_diff"]:.6f} pass={sanity["pass"]}')
     if not sanity['pass'] and not args.allow_unsafe_export:
