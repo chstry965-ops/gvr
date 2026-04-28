@@ -51,9 +51,21 @@ from ru_number_normalizer import normalize_ru_phone, is_russian_number
 # ── Config ──────────────────────────────────────────────────────────────────
 
 CONCURRENCY = 20
-DELAY_MIN = 0.05
+PER_HOST_CONCURRENCY = 12      # parallel requests allowed per host
+PER_HOST_CONCURRENCY_STRICT = 3  # for hosts that ban quickly (rusprofile, cian)
+DELAY_MIN = 0.0               # base inter-request delay (seconds)
 DELAY_MAX = 0.3
 MAX_PAGES = 30
+
+# Aggressive timeouts: dead URLs (e.g. irr.ru pages that hang) stop wasting time.
+FETCH_TIMEOUT_TOTAL = 10.0
+FETCH_TIMEOUT_SOCK = 6.0
+FETCH_RETRIES = 2
+
+# Hosts that ban quickly under load — apply per-host cap = STRICT and inter-request
+# delay. Add a host here only if you've actually seen it return 403/429 under
+# the default per-host concurrency.
+STRICT_HOSTS = ('rusprofile',)
 OUTPUT_PATH = os.path.normpath(os.path.join(
     os.path.dirname(__file__), '..', 'datasets', 'ru', 'raw', 'legitimate_numbers.csv'
 ))
@@ -442,32 +454,50 @@ def default_source_confidence(category: str, source: str) -> float:
 # ── Async HTTP ─────────────────────────────────────────────────────────────
 
 class AsyncScraper:
-    def __init__(self, concurrency: int = CONCURRENCY):
+    def __init__(self, concurrency: int = CONCURRENCY,
+                 per_host_concurrency: int = PER_HOST_CONCURRENCY):
         self.sem = asyncio.Semaphore(concurrency)
         self.session: Optional[aiohttp.ClientSession] = None
         self.seen: Set[str] = set()
         self.results: List[LegitEntry] = []
-        self.host_locks: Dict[str, asyncio.Lock] = {}
+        self.host_sems: Dict[str, asyncio.Semaphore] = {}
         self.host_last: Dict[str, float] = {}
         self.visited_urls: Set[str] = set()  # skip already-fetched URLs
         self._resumed_fetched: int = 0  # fetched count from previous runs
         self.stats = {'fetched': 0, 'failed': 0, 'phones_found': 0, 'skipped': 0}
         self.blacklist: Set[str] = set()  # numbers from fraud/suspect databases
+        self._per_host_concurrency = per_host_concurrency
+        self._progress_lock = asyncio.Lock()
 
     async def start(self):
+        # Bigger TCP connector with per-host cap → more parallel sockets.
+        connector = aiohttp.TCPConnector(
+            limit=max(128, self._per_host_concurrency * 12),
+            limit_per_host=max(8, self._per_host_concurrency),
+            ssl=False,
+            ttl_dns_cache=300,
+        )
         self.session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=20, sock_read=12),
-            headers={'Accept-Language': 'ru-RU,ru;q=0.9,en;q=0.5'}
+            timeout=aiohttp.ClientTimeout(
+                total=FETCH_TIMEOUT_TOTAL, sock_read=FETCH_TIMEOUT_SOCK,
+            ),
+            headers={'Accept-Language': 'ru-RU,ru;q=0.9,en;q=0.5'},
+            connector=connector,
         )
 
     async def close(self):
         if self.session:
             await self.session.close()
 
-    def _get_host_lock(self, host: str) -> asyncio.Lock:
-        if host not in self.host_locks:
-            self.host_locks[host] = asyncio.Lock()
-        return self.host_locks[host]
+    def _get_host_sem(self, host: str) -> asyncio.Semaphore:
+        sem = self.host_sems.get(host)
+        if sem is None:
+            cap = (PER_HOST_CONCURRENCY_STRICT
+                   if any(s in host for s in STRICT_HOSTS)
+                   else self._per_host_concurrency)
+            sem = asyncio.Semaphore(max(1, cap))
+            self.host_sems[host] = sem
+        return sem
 
     async def fetch(self, url: str, allow_status: Set[int] = None) -> Optional[str]:
         # Skip already visited
@@ -479,48 +509,61 @@ class AsyncScraper:
         new_fetched = self.stats['fetched'] - self._resumed_fetched
         if max_urls > 0 and new_fetched >= max_urls:
             return None
-        # Progress counter
-        new_fetched = self.stats['fetched'] - self._resumed_fetched + 1
-        if max_urls > 0:
-            log.info(f"[{new_fetched}/{max_urls}] {url}")
-        elif new_fetched % 50 == 0:
-            log.info(f"[{new_fetched}] fetched, {len(self.results)} numbers")
-        from urllib.parse import urlparse
         host = urlparse(url).netloc
-        lock = self._get_host_lock(host)
+        host_sem = self._get_host_sem(host)
         self.visited_urls.add(url)
 
-        async with lock:
-            now = time.monotonic()
-            elapsed = now - self.host_last.get(host, 0)
-            min_delay = DELAY_MIN if 'rusprofile' not in host else 0.8
-            if elapsed < min_delay:
-                await asyncio.sleep(min_delay - elapsed)
+        # Progress counter (sloppy under parallelism but informative)
+        new_fetched = self.stats['fetched'] - self._resumed_fetched + 1
+        if max_urls > 0 and new_fetched % 25 == 0:
+            log.info(f"[{new_fetched}/{max_urls}] {url}")
+        elif new_fetched % 100 == 0:
+            log.info(f"[{new_fetched}] fetched, {len(self.results)} numbers")
 
-            headers = {'User-Agent': random.choice(USER_AGENTS)}
-            allow = allow_status or {200}
+        # Optional small per-host inter-request delay (no global lock, so doesn't
+        # block other hosts). Only applied to strict hosts to respect rate limits.
+        is_strict = any(s in host for s in STRICT_HOSTS)
+        min_delay = 0.5 if is_strict else DELAY_MIN
 
-            for attempt in range(3):
-                try:
-                    async with self.sem:
-                        async with self.session.get(url, headers=headers, ssl=False) as resp:
-                            self.host_last[host] = time.monotonic()
-                            if resp.status in allow:
-                                text = await resp.text(errors='replace')
-                                self.stats['fetched'] += 1
-                                return text
-                            elif resp.status in {404, 410}:
-                                return None
-                            else:
-                                self.stats['failed'] += 1
-                                return None
-                except (aiohttp.ClientError, asyncio.TimeoutError):
-                    if attempt < 2:
-                        await asyncio.sleep(1.5 * (attempt + 1))
-                    else:
-                        self.stats['failed'] += 1
-                        return None
-            return None
+        headers = {'User-Agent': random.choice(USER_AGENTS)}
+        allow = allow_status or {200}
+
+        for attempt in range(FETCH_RETRIES):
+            try:
+                # Both global and per-host caps. HTTP runs OUTSIDE any per-host
+                # lock so different URLs on the same host fetch concurrently.
+                async with self.sem, host_sem:
+                    if min_delay > 0:
+                        last = self.host_last.get(host, 0)
+                        wait = (last + min_delay) - time.monotonic()
+                        if wait > 0:
+                            await asyncio.sleep(wait)
+                        self.host_last[host] = time.monotonic()
+                    async with self.session.get(url, headers=headers, ssl=False) as resp:
+                        if resp.status in allow:
+                            text = await resp.text(errors='replace')
+                            self.stats['fetched'] += 1
+                            return text
+                        elif resp.status in {404, 410}:
+                            return None
+                        else:
+                            self.stats['failed'] += 1
+                            return None
+            except (aiohttp.ClientError, asyncio.TimeoutError):
+                if attempt < FETCH_RETRIES - 1:
+                    await asyncio.sleep(0.3 * (attempt + 1))
+                else:
+                    self.stats['failed'] += 1
+                    return None
+        return None
+
+    async def fetch_many(self, urls: List[str],
+                         allow_status: Set[int] = None) -> List[Optional[str]]:
+        """Fetch many URLs concurrently. Order of results matches `urls`."""
+        if not urls:
+            return []
+        tasks = [self.fetch(u, allow_status=allow_status) for u in urls]
+        return await asyncio.gather(*tasks)
 
     def load_blacklist(self):
         """Load suspect/fraud numbers from ru_reputation_raw.csv."""
@@ -563,176 +606,155 @@ class AsyncScraper:
 async def scrape_zoon(scraper: AsyncScraper, cities: Dict[str, str],
                       categories: List[str]) -> int:
     """zoon.ru — JSON-LD ItemList gives 30 named orgs + 31 tel: links per page.
-    No pagination (same HTML for ?page=N), so we vary categories × cities."""
+    Pages fetched in parallel across (city, category) pairs."""
+    pairs = [(ck, cs, cat) for ck, cs in cities.items() for cat in categories]
+    urls = [f'https://zoon.ru/{cs}/{cat}/' for _, cs, cat in pairs]
+    htmls = await scraper.fetch_many(urls)
+
     total = 0
-    for city_key, city_slug in cities.items():
-        for cat in categories:
-            url = f'https://zoon.ru/{city_slug}/{cat}/'
-            html = await scraper.fetch(url)
-            if not html:
+    for (city_key, city_slug, cat), url, html in zip(pairs, urls, htmls):
+        if not html:
+            continue
+
+        # Extract names from JSON-LD ItemList
+        names: List[str] = []
+        for block in LD_JSON_RE.findall(html):
+            try:
+                data = json.loads(block)
+            except (json.JSONDecodeError, ValueError):
                 continue
+            if data.get('@type') == 'ItemList' and 'itemListElement' in data:
+                for item in data['itemListElement']:
+                    biz = item.get('item', {})
+                    name = biz.get('name', '')
+                    if name:
+                        names.append(name)
 
-            # Extract names from JSON-LD ItemList
-            names: List[str] = []
-            for block in LD_JSON_RE.findall(html):
-                try:
-                    data = json.loads(block)
-                except (json.JSONDecodeError, ValueError):
+        # Extract phones from tel: links
+        tel_phones: List[str] = []
+        for raw in TEL_HREF_RE.findall(html):
+            norm = normalize_ru_phone(raw.strip(), reject_non_ru=True)
+            if norm and len(norm) == 12:
+                tel_phones.append(norm)
+
+        if names and tel_phones:
+            offset = 1 if len(tel_phones) > len(names) else 0
+            matched = min(len(names), len(tel_phones) - offset)
+            for i in range(matched):
+                phone = tel_phones[offset + i]
+                digits = phone[2:]
+                if digits == digits[0] * 10:
                     continue
-                if data.get('@type') == 'ItemList' and 'itemListElement' in data:
-                    for item in data['itemListElement']:
-                        biz = item.get('item', {})
-                        name = biz.get('name', '')
-                        if name:
-                            names.append(name)
-
-            # Extract phones from tel: links
-            tel_phones_raw = TEL_HREF_RE.findall(html)
-            tel_phones: List[str] = []
-            for raw in tel_phones_raw:
-                norm = normalize_ru_phone(raw.strip(), reject_non_ru=True)
-                if norm and len(norm) == 12:
-                    tel_phones.append(norm)
-
-            # Match names ↔ phones by index (first tel: is often a duplicate/ad, rest match 1:1)
-            if names and tel_phones:
-                # If more phones than names, skip first (it's usually an ad/portal phone)
-                offset = 1 if len(tel_phones) > len(names) else 0
-                matched = min(len(names), len(tel_phones) - offset)
-                for i in range(matched):
-                    phone = tel_phones[offset + i]
-                    # Skip fake/test numbers (consecutive digits, all same, etc.)
-                    digits = phone[2:]  # strip +7
-                    if digits == digits[0] * 10:  # e.g. 0000000000
-                        continue
-                    cat_inferred = infer_category(f'{cat} {names[i]}')
-                    if scraper.add(LegitEntry(phone, names[i], cat_inferred, 'zoon', city_key, url)):
-                        total += 1
-            # No fallback — regex phones from zoon are mostly ads/fake
-
-            log.info(f"  zoon/{city_slug}/{cat}: names={len(names)}, phones={len(tel_phones)}, total={total}")
+                cat_inferred = infer_category(f'{cat} {names[i]}')
+                if scraper.add(LegitEntry(phone, names[i], cat_inferred, 'zoon', city_key, url)):
+                    total += 1
     return total
 
 
 # ── Source 2: spravker.ru ─────────────────────────────────────────────────
 
-async def scrape_spravker_category(scraper: AsyncScraper, city_key: str,
-                                    host: str, subcat: str) -> int:
-    """Spravker: parse subcategory listing → extract phones + .htm org links → visit each."""
+async def scrape_spravker(scraper: AsyncScraper, cities: Dict[str, str],
+                           subcategories: List[str]) -> int:
+    """Spravker: fetch all listing pages in parallel, then all org pages in parallel."""
     total = 0
+    pairs = [(ck, host, subcat) for ck, host in cities.items() for subcat in subcategories]
+    listing_urls = [f'https://{host}/{subcat}/' for _, host, subcat in pairs]
+    listings = await scraper.fetch_many(listing_urls)
 
-    # Step 1: listing page — extract phones + org page URLs
-    url = f'https://{host}/{subcat}/'
-    html = await scraper.fetch(url)
-    if not html:
-        return 0
-
-    # Phones from listing — tel: links first, then regex fallback
-    listing_phones: List[str] = []
-    for raw in TEL_HREF_RE.findall(html):
-        norm = normalize_ru_phone(raw.strip(), reject_non_ru=True)
-        if norm and len(norm) == 12 and norm not in listing_phones:
-            listing_phones.append(norm)
-    # Fallback: regex phones (spravker listing pages have phones in text, not tel: links)
-    if not listing_phones:
-        listing_phones = extract_phones(html)
-    if listing_phones:
-        title = extract_title(html)
-        cat_inferred = infer_category(f'{subcat} {title}')
-        added = scraper.add_phones(listing_phones, title or subcat, cat_inferred, 'spravker', city_key, url)
-        total += added
-
-    # Collect .htm org page links
-    org_urls: List[str] = []
-    for link in SPRAVKER_ORG_RE.findall(html):
-        if link.startswith('/'):
-            full = f'https://{host}{link}'
-        elif link.startswith('http'):
-            full = link
-        else:
-            full = f'https://{host}/{subcat}/{link}'
-        org_urls.append(full)
-
-    log.info(f"  spravker_listing/{host}/{subcat}: {len(listing_phones)} phones, {len(org_urls)} org links, {total} total")
-
-    # Step 2: visit each org page — ONLY tel: links
-    for org_url in org_urls[:10]:
-        html = await scraper.fetch(org_url)
+    org_jobs: List[Tuple[str, str, str, str]] = []  # (city_key, subcat, listing_url, org_url)
+    for (city_key, host, subcat), url, html in zip(pairs, listing_urls, listings):
         if not html:
             continue
-        tel_raw = TEL_HREF_RE.findall(html)
+        listing_phones: List[str] = []
+        for raw in TEL_HREF_RE.findall(html):
+            norm = normalize_ru_phone(raw.strip(), reject_non_ru=True)
+            if norm and len(norm) == 12 and norm not in listing_phones:
+                listing_phones.append(norm)
+        if not listing_phones:
+            listing_phones = extract_phones(html)
+        if listing_phones:
+            title = extract_title(html)
+            cat_inferred = infer_category(f'{subcat} {title}')
+            total += scraper.add_phones(listing_phones, title or subcat, cat_inferred,
+                                        'spravker', city_key, url)
+
+        for link in SPRAVKER_ORG_RE.findall(html)[:10]:
+            if link.startswith('/'):
+                full = f'https://{host}{link}'
+            elif link.startswith('http'):
+                full = link
+            else:
+                full = f'https://{host}/{subcat}/{link}'
+            org_jobs.append((city_key, subcat, url, full))
+
+    log.info(f"  spravker: {len(listings)} listings fetched, {len(org_jobs)} org pages queued")
+
+    # Phase 2 — fetch all org pages in parallel
+    org_htmls = await scraper.fetch_many([j[3] for j in org_jobs])
+    for (city_key, subcat, _listing, org_url), html in zip(org_jobs, org_htmls):
+        if not html:
+            continue
         org_phones: List[str] = []
-        for raw in tel_raw:
+        for raw in TEL_HREF_RE.findall(html):
             norm = normalize_ru_phone(raw.strip(), reject_non_ru=True)
             if norm and len(norm) == 12:
                 org_phones.append(norm)
         if org_phones:
             title = extract_title(html)
             cat_inferred = infer_category(f'{subcat} {title}')
-            added = scraper.add_phones(org_phones, title or subcat, cat_inferred, 'spravker', city_key, org_url)
-            total += added
-
-    return total
-
-
-async def scrape_spravker(scraper: AsyncScraper, cities: Dict[str, str],
-                           subcategories: List[str]) -> int:
-    total = 0
-    for city_key, host in cities.items():
-        for subcat in subcategories:
-            count = await scrape_spravker_category(scraper, city_key, host, subcat)
-            total += count
-            if count > 0:
-                log.info(f"  spravker/{city_key}/{subcat}: {count}")
+            total += scraper.add_phones(org_phones, title or subcat, cat_inferred,
+                                        'spravker', city_key, org_url)
     return total
 
 
 # ── Source 3: rusprofile.ru ────────────────────────────────────────────────
 
 async def scrape_rusprofile(scraper: AsyncScraper, queries: List[str]) -> int:
-    """Rusprofile: search → collect /id/XXXX links → visit company pages for tel: links."""
-    total = 0
-    for query in queries:
-        company_ids: Set[str] = set()
+    """Rusprofile: parallel search across queries × 2 pages, then parallel org pages.
 
-        # Step 1: collect company IDs from search results (2 pages)
-        for page in range(1, 3):
-            url = f'https://www.rusprofile.ru/search?query={query}&page={page}'
-            html = await scraper.fetch(url, allow_status={200, 403})
-            if not html:
-                break
-            ids = RUSPROFILE_ORG_RE.findall(html)
-            company_ids.update(ids)
-            if not ids:
-                break
+    Per-host concurrency for rusprofile is limited (STRICT) so we won't hammer it.
+    """
+    # Phase 1 — search pages
+    search_urls = [f'https://www.rusprofile.ru/search?query={q}&page={p}'
+                   for q in queries for p in (1, 2)]
+    search_html = await scraper.fetch_many(search_urls, allow_status={200, 403})
 
-        if not company_ids:
+    # Map query → ids
+    query_ids: Dict[str, Set[str]] = {q: set() for q in queries}
+    for url, html in zip(search_urls, search_html):
+        if not html:
             continue
+        # Extract query from URL
+        q = url.split('query=')[1].split('&')[0]
+        for cid in RUSPROFILE_ORG_RE.findall(html):
+            query_ids.setdefault(q, set()).add(cid)
 
-        log.info(f"  rusprofile/{query}: {len(company_ids)} companies found")
+    # Phase 2 — fetch up to 5 company pages per query (in parallel)
+    org_jobs: List[Tuple[str, str, str]] = []  # (query, cid, url)
+    for q, ids in query_ids.items():
+        for cid in list(ids)[:5]:
+            org_jobs.append((q, cid, f'https://www.rusprofile.ru{cid}'))
 
-        # Step 2: visit each company page for phone
-        for cid in list(company_ids)[:5]:
-            url = f'https://www.rusprofile.ru{cid}'
-            html = await scraper.fetch(url, allow_status={200, 403})
-            if not html:
-                continue
+    if not org_jobs:
+        return 0
 
-            # Focus on tel: links (most reliable on rusprofile)
-            tel_phones: List[str] = []
-            for raw in TEL_HREF_RE.findall(html):
-                norm = normalize_ru_phone(raw.strip(), reject_non_ru=True)
-                if norm and len(norm) == 12:
-                    tel_phones.append(norm)
+    log.info(f"  rusprofile: {len(org_jobs)} org pages queued across {len(queries)} queries")
+    org_htmls = await scraper.fetch_many([j[2] for j in org_jobs], allow_status={200, 403})
 
-            if tel_phones:
-                title = extract_title(html)
-                cat_inferred = infer_category(f'{query} {title}')
-                added = scraper.add_phones(tel_phones, title or query, cat_inferred, 'rusprofile', '', url)
-                total += added
-                if added > 0:
-                    log.info(f"  rusprofile_org {cid}: {added} new (total {total})")
-
+    total = 0
+    for (query, cid, url), html in zip(org_jobs, org_htmls):
+        if not html:
+            continue
+        tel_phones: List[str] = []
+        for raw in TEL_HREF_RE.findall(html):
+            norm = normalize_ru_phone(raw.strip(), reject_non_ru=True)
+            if norm and len(norm) == 12:
+                tel_phones.append(norm)
+        if tel_phones:
+            title = extract_title(html)
+            cat_inferred = infer_category(f'{query} {title}')
+            total += scraper.add_phones(tel_phones, title or query, cat_inferred,
+                                        'rusprofile', '', url)
     return total
 
 
@@ -777,44 +799,38 @@ async def scrape_mos_ru(scraper: AsyncScraper) -> int:
 # ── Source 6: cian.ru — real estate agents/owners ──────────────────────────
 
 async def scrape_cian(scraper: AsyncScraper, max_pages: int = 30) -> int:
-    """ЦИАН — телефоны агентов и собственников недвижимости."""
-    total = 0
-    regions = [1, 2, 4593, 4597, 4601, 4605, 4609, 4612, 4615, 4618]  # МСК, СПБ, и др.
+    """ЦИАН — телефоны агентов и собственников недвижимости.
+
+    Все URL ставятся в очередь и фетчатся параллельно (per-host cap=STRICT).
+    Это даёт огромный выигрыш по сравнению с прежним последовательным циклом.
+    """
+    regions = [1, 2, 4593, 4597, 4601, 4605, 4609, 4612, 4615, 4618]
     deal_types = ['sale', 'rent']
     offer_types = ['flat', 'house', 'commercial']
 
+    urls: List[Tuple[str, str]] = []  # (url, category)
     for region in regions:
         for deal in deal_types:
             for offer in offer_types:
                 for page in range(1, max_pages + 1):
-                    url = f'https://www.cian.ru/cat.php?deal_type={deal}&engine_version=2&offer_type={offer}&region={region}&p={page}'
-                    html = await scraper.fetch(url)
-                    if not html:
-                        break
-                    phones = extract_phones(html)
-                    if not phones and page > 3:
-                        break
-                    if phones:
-                        cat = 'realestate_agent' if 'homeowner' not in url else 'realestate_owner'
-                        added = scraper.add_phones(phones, 'ЦИАН', cat, 'cian', '', url)
-                        total += added
-                        if added > 0:
-                            log.info(f"  cian/{deal}/{offer}/r{region}/p{page}: {added} new (total {total})")
-
-    # Owner-only listings
+                    u = (f'https://www.cian.ru/cat.php?deal_type={deal}'
+                         f'&engine_version=2&offer_type={offer}&region={region}&p={page}')
+                    urls.append((u, 'realestate_agent'))
     for region in regions:
         for page in range(1, min(max_pages, 10) + 1):
-            url = f'https://www.cian.ru/cat.php?deal_type=rent&engine_version=2&offer_type=flat&region={region}&is_by_homeowner=1&p={page}'
-            html = await scraper.fetch(url)
-            if not html:
-                break
-            phones = extract_phones(html)
-            if not phones and page > 2:
-                break
-            if phones:
-                added = scraper.add_phones(phones, 'ЦИАН собственник', 'realestate_owner', 'cian', '', url)
-                total += added
+            u = (f'https://www.cian.ru/cat.php?deal_type=rent&engine_version=2'
+                 f'&offer_type=flat&region={region}&is_by_homeowner=1&p={page}')
+            urls.append((u, 'realestate_owner'))
 
+    htmls = await scraper.fetch_many([u for u, _ in urls])
+    total = 0
+    for (url, cat), html in zip(urls, htmls):
+        if not html:
+            continue
+        phones = extract_phones(html)
+        if phones:
+            name = 'ЦИАН собственник' if cat == 'realestate_owner' else 'ЦИАН'
+            total += scraper.add_phones(phones, name, cat, 'cian', '', url)
     return total
 
 
@@ -822,9 +838,13 @@ async def scrape_public_url_list(scraper: AsyncScraper, source: str,
                                  urls: List[Tuple[str, str, str]],
                                  link_limit: int = 8,
                                  confidence: float = 0.70) -> int:
+    """Two-phase parallel scrape: all listings concurrently, then all detail links."""
     total = 0
-    for page_url, name, category in urls:
-        html = await scraper.fetch(page_url)
+    listings = await scraper.fetch_many([u for u, _, _ in urls])
+
+    # (page_url, name, category, link, parent_title) — parent_title нужен как fallback для detail-страниц.
+    detail_jobs: List[Tuple[str, str, str, str, Optional[str]]] = []
+    for (page_url, name, category), html in zip(urls, listings):
         if not html:
             continue
         title = extract_title(html)
@@ -832,19 +852,20 @@ async def scrape_public_url_list(scraper: AsyncScraper, source: str,
         if phones:
             added = scraper.add_phones(phones, title or name, category, source, '', page_url, confidence)
             total += added
-            if added > 0:
-                log.info(f"  {source}/{category}: {added} new from {page_url}")
         for link in extract_links(html, page_url, limit=link_limit):
-            html2 = await scraper.fetch(link)
+            detail_jobs.append((page_url, name, category, link, title))
+
+    if detail_jobs:
+        detail_htmls = await scraper.fetch_many([j[3] for j in detail_jobs])
+        for (page_url, name, category, link, parent_title), html2 in zip(detail_jobs, detail_htmls):
             if not html2:
                 continue
             phones2 = extract_phones(html2)
             if phones2:
                 title2 = extract_title(html2)
-                added = scraper.add_phones(phones2, title2 or title or name, category, source, '', link, confidence)
+                added = scraper.add_phones(phones2, title2 or parent_title or name, category,
+                                           source, '', link, confidence)
                 total += added
-                if added > 0:
-                    log.info(f"  {source}/{category}: {added} new from detail")
     return total
 
 
@@ -869,7 +890,7 @@ async def scrape_service_marketplaces_fast(scraper: AsyncScraper) -> int:
 
 
 async def scrape_classified_public(scraper: AsyncScraper) -> int:
-    return await scrape_public_url_list(scraper, 'classified_public', CLASSIFIED_PUBLIC_URLS, link_limit=12, confidence=0.55)
+    return await scrape_public_url_list(scraper, 'classified_public', CLASSIFIED_PUBLIC_URLS, link_limit=24, confidence=0.55)
 
 
 # ── Source 7: fl.ru — freelancers with public contacts ────────────────────
@@ -1099,13 +1120,14 @@ def generate_user_numbers(scraper: AsyncScraper, count: int = 5000) -> int:
 # ── Main ───────────────────────────────────────────────────────────────────
 
 async def run_all(scraper: AsyncScraper, spravker_cities: Dict[str, str],
-                  zoon_cities: Dict[str, str], profile: str = 'smart'):
+                  zoon_cities: Dict[str, str], profile: str = 'smart',
+                  source_timeout: float = 0.0):
     if profile == 'weak':
         sources = [
             ('delivery_public',      lambda: scrape_delivery_public(scraper)),
             ('service_marketplace_fast',  lambda: scrape_service_marketplaces_fast(scraper)),
             ('classified_public',    lambda: scrape_classified_public(scraper)),
-            ('cian',                 lambda: scrape_cian(scraper, max_pages=20)),
+            ('cian',                 lambda: scrape_cian(scraper, max_pages=50)),
             ('hands_ru',             lambda: scrape_hands_ru(scraper)),
             ('freelance_ru',         lambda: scrape_freelance_ru(scraper)),
             ('fl_ru',                lambda: scrape_fl_ru(scraper)),
@@ -1150,23 +1172,61 @@ async def run_all(scraper: AsyncScraper, spravker_cities: Dict[str, str],
             ('mos_ru',               lambda: scrape_mos_ru(scraper)),
         ]
 
-    source_stats = {}
-    for name, fn in sources:
+    source_stats: Dict[str, Tuple[int, float]] = {}
+
+    async def _run_source(name: str, fn) -> None:
         log.info(f"▶ Source: {name}")
         t0 = time.monotonic()
         try:
-            count = await fn()
-        except Exception as e:
+            if source_timeout > 0:
+                count = await asyncio.wait_for(fn(), timeout=source_timeout)
+            else:
+                count = await fn()
+        except asyncio.TimeoutError:
+            elapsed = time.monotonic() - t0
+            log.warning(f"  ⏱ {name}: aborted after {elapsed:.1f}s (--source-timeout={source_timeout}s)")
+            source_stats[name] = (0, elapsed)
+            return
+        except Exception as e:  # noqa: BLE001 — log and continue
             log.error(f"  Source {name} failed: {e}")
             count = 0
         elapsed = time.monotonic() - t0
         source_stats[name] = (count, elapsed)
         log.info(f"  ✓ {name}: {count} numbers in {elapsed:.1f}s")
 
-        # Incremental save after each source
-        save_results(scraper.results, scraper._output_path)
-        save_state(scraper, scraper._output_path)
-        log.info(f"  💾 Saved {len(scraper.results)} numbers | fetched={scraper.stats['fetched']} skipped={scraper.stats['skipped']}")
+    # Periodic background autosave so data persists even with concurrent sources.
+    autosave_stop = asyncio.Event()
+
+    async def _autosave():
+        while not autosave_stop.is_set():
+            try:
+                await asyncio.wait_for(autosave_stop.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                pass
+            try:
+                save_results(scraper.results, scraper._output_path)
+                save_state(scraper, scraper._output_path)
+                log.info(
+                    f"  💾 Autosave: {len(scraper.results)} numbers | "
+                    f"fetched={scraper.stats['fetched']} skipped={scraper.stats['skipped']}"
+                )
+            except Exception as e:  # noqa: BLE001
+                log.warning(f"  autosave failed: {e}")
+
+    autosave_task = asyncio.create_task(_autosave())
+    try:
+        # Run all sources in parallel — they share scraper state safely
+        # (single-threaded asyncio + dedup via scraper.seen).
+        await asyncio.gather(
+            *[_run_source(name, fn) for name, fn in sources],
+            return_exceptions=True,
+        )
+    finally:
+        autosave_stop.set()
+        try:
+            await autosave_task
+        except Exception:
+            pass
 
     return source_stats
 
@@ -1221,37 +1281,60 @@ def load_state(scraper: AsyncScraper):
 async def main():
     parser = argparse.ArgumentParser(description='Сбор легитимных номеров РФ')
     parser.add_argument('--cities', nargs='+', default=['msk', 'spb', 'ekb', 'kzn', 'nnov', 'rnd', 'ufa', 'krasnodar', 'voronezh', 'chelyabinsk'],
-                        help='Города (ключи: msk, spb, ekb, kzn, ...)'),
+                        help='Города (ключи: msk, spb, ekb, kzn, ...). '
+                             'Передай "all" чтобы взять все доступные города (32 для zoon, 16 для spravker).'),
     parser.add_argument('--profile', choices=['smart', 'broad', 'org', 'weak'], default='smart',
                         help='smart=сначала слабые/потом org, broad=всё, org=только организации, weak=только слабые категории')
     parser.add_argument('--concurrency', type=int, default=CONCURRENCY,
-                        help='Макс. одновременных HTTP-запросов')
+                        help='Макс. одновременных HTTP-запросов (глобальный лимит)')
+    parser.add_argument('--per-host-concurrency', type=int, default=PER_HOST_CONCURRENCY,
+                        help='Макс. параллельных запросов к одному хосту')
     parser.add_argument('--max-urls', type=int, default=0,
                         help='Макс. HTTP-запросов (0=без лимита)')
     parser.add_argument('--add-user-numbers', type=int, default=0,
                         help='Добавить N низкоуверенных обычных мобильных номеров из официального плана нумерации')
+    parser.add_argument('--no-resume', action='store_true',
+                        help='Игнорировать state-файл: переобойти все URL заново (сайты обновляются, новые номера будут). CSV с уже найденными номерами всё равно подхватывается для дедупа.')
+    parser.add_argument('--reset-state', action='store_true',
+                        help='Удалить state-файл перед стартом.')
+    parser.add_argument('--source-timeout', type=float, default=120.0,
+                        help='Макс. секунд на один источник (0=без лимита). '
+                             'Если источник (напр. rusprofile) висит на банах/таймаутах — он будет отменён, '
+                             'другие продолжат работу.')
     parser.add_argument('--output', default=OUTPUT_PATH,
                         help='Выходной CSV файл')
     args = parser.parse_args()
 
-    spravker_cities = {k: v for k, v in SPRAVKER_CITIES.items() if k in args.cities}
-    zoon_cities = {k: v for k, v in ZOON_CITIES.items() if k in args.cities}
+    if len(args.cities) == 1 and args.cities[0].lower() == 'all':
+        spravker_cities = dict(SPRAVKER_CITIES)
+        zoon_cities = dict(ZOON_CITIES)
+        args.cities = sorted(set(SPRAVKER_CITIES) | set(ZOON_CITIES))
+    else:
+        spravker_cities = {k: v for k, v in SPRAVKER_CITIES.items() if k in args.cities}
+        zoon_cities = {k: v for k, v in ZOON_CITIES.items() if k in args.cities}
 
     log.info(f"🚀 Starting legitimate number collector")
     log.info(f"  Cities: {args.cities}")
     log.info(f"  Spravker cities: {list(spravker_cities.keys())}")
     log.info(f"  Zoon cities: {list(zoon_cities.keys())}")
     log.info(f"  Profile: {args.profile}")
-    log.info(f"  Concurrency: {args.concurrency}")
+    log.info(f"  Concurrency: {args.concurrency} (per-host: {args.per_host_concurrency})")
 
-    scraper = AsyncScraper(concurrency=args.concurrency)
+    scraper = AsyncScraper(concurrency=args.concurrency,
+                           per_host_concurrency=args.per_host_concurrency)
     scraper._output_path = args.output  # for incremental saves
     scraper._max_urls = args.max_urls   # 0 = unlimited
     await scraper.start()
 
     try:
         # 0a. Resume state (visited URLs)
-        load_state(scraper)
+        if args.reset_state and os.path.exists(STATE_PATH):
+            os.remove(STATE_PATH)
+            log.info("  🗑  Removed state file (--reset-state)")
+        if not args.no_resume:
+            load_state(scraper)
+        else:
+            log.info("  ⏭  Skipping state resume (--no-resume): all URLs will be re-fetched")
 
         # 0b. Resume: load existing CSV so data isn't lost on restart
         if os.path.exists(args.output):
@@ -1286,7 +1369,10 @@ async def main():
         scraper.load_blacklist()
 
         # 4. Scrape all sources
-        stats = await run_all(scraper, spravker_cities, zoon_cities, profile=args.profile)
+        stats = await run_all(
+            scraper, spravker_cities, zoon_cities,
+            profile=args.profile, source_timeout=args.source_timeout,
+        )
 
         if args.add_user_numbers > 0:
             log.info(f"▶ Source: numbering_plan_background ({args.add_user_numbers})")
