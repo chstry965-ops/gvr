@@ -892,7 +892,7 @@ async def scrape_service_marketplaces_fast(scraper: AsyncScraper) -> int:
 
 
 async def scrape_classified_public(scraper: AsyncScraper) -> int:
-    return await scrape_public_url_list(scraper, 'classified_public', CLASSIFIED_PUBLIC_URLS, link_limit=12, confidence=0.55)
+    return await scrape_public_url_list(scraper, 'classified_public', CLASSIFIED_PUBLIC_URLS, link_limit=24, confidence=0.55)
 
 
 # ── Source 7: fl.ru — freelancers with public contacts ────────────────────
@@ -1128,7 +1128,7 @@ async def run_all(scraper: AsyncScraper, spravker_cities: Dict[str, str],
             ('delivery_public',      lambda: scrape_delivery_public(scraper)),
             ('service_marketplace_fast',  lambda: scrape_service_marketplaces_fast(scraper)),
             ('classified_public',    lambda: scrape_classified_public(scraper)),
-            ('cian',                 lambda: scrape_cian(scraper, max_pages=20)),
+            ('cian',                 lambda: scrape_cian(scraper, max_pages=50)),
             ('hands_ru',             lambda: scrape_hands_ru(scraper)),
             ('freelance_ru',         lambda: scrape_freelance_ru(scraper)),
             ('fl_ru',                lambda: scrape_fl_ru(scraper)),
@@ -1285,6 +1285,10 @@ async def main():
                         help='Макс. HTTP-запросов (0=без лимита)')
     parser.add_argument('--add-user-numbers', type=int, default=0,
                         help='Добавить N низкоуверенных обычных мобильных номеров из официального плана нумерации')
+    parser.add_argument('--no-resume', action='store_true',
+                        help='Игнорировать state-файл: переобойти все URL заново (сайты обновляются, новые номера будут). CSV с уже найденными номерами всё равно подхватывается для дедупа.')
+    parser.add_argument('--reset-state', action='store_true',
+                        help='Удалить state-файл перед стартом.')
     parser.add_argument('--output', default=OUTPUT_PATH,
                         help='Выходной CSV файл')
     args = parser.parse_args()
@@ -1307,7 +1311,13 @@ async def main():
 
     try:
         # 0a. Resume state (visited URLs)
-        load_state(scraper)
+        if args.reset_state and os.path.exists(STATE_PATH):
+            os.remove(STATE_PATH)
+            log.info("  🗑  Removed state file (--reset-state)")
+        if not args.no_resume:
+            load_state(scraper)
+        else:
+            log.info("  ⏭  Skipping state resume (--no-resume): all URLs will be re-fetched")
 
         # 0b. Resume: load existing CSV so data isn't lost on restart
         if os.path.exists(args.output):
