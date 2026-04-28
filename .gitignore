@@ -1,12 +1,38 @@
+# ── IDE / OS ──
 *.iml
-.gradle
-/local.properties
-/.idea/
+.idea/
 .DS_Store
-/build
-/captures
-.externalNativeBuild
-.cxx
-local.properties
+Thumbs.db
+
+# ── Android / Gradle ──
+.gradle/
+build/
 app/build/
 app/schemas/
+local.properties
+.externalNativeBuild
+.cxx
+/captures
+
+# ── Python ──
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+.venv/
+venv/
+
+# ── Kotlin ──
+.kotlin/
+
+# ── VS Code ──
+.vscode/
+
+# ── Datasets: cache & generated ──
+datasets/ru/raw/cache/
+datasets/ru/reports/*.json
+datasets/ru/reports/*.html
+datasets/ru/reports/*.md
+datasets/ru/reports/*.png

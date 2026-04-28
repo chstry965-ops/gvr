@@ -16,5 +16,5 @@ data class BlockedNumber(
     val source: Source = Source.MANUAL,
     val pattern: String? = null
 ) {
-    enum class Source { MANUAL, PREBUILT, REPORT }
+    enum class Source { MANUAL, PREBUILT, REPORT, FEEDBACK }
 }

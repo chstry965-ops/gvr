@@ -10,7 +10,7 @@ class HiddenNumberRule(private val settings: SettingsStore) : Rule {
 
     override suspend fun check(number: String?, isHidden: Boolean, callDetails: android.telecom.Call.Details?): RuleResult? {
         if (!settings.blockHiddenNumbers.first()) return null
-        if (!isHidden && number != null) return null
+        if (!isHidden) return null
         val action = settings.hiddenNumberAction.first()
         return RuleResult(action, name)
     }

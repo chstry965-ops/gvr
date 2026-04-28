@@ -19,6 +19,12 @@ object PhoneNormalizer {
         // HTML/JS-символы (< > / " etc.) — это не номер.
         if (!looksLikePhone(rawNumber)) return null
 
+        // Короткие номера (экстренные службы, городские) — нормализуем как есть
+        val digitsOnly = rawNumber.filter { it.isDigit() }
+        if (digitsOnly.length in 2..6) {
+            return digitsOnly
+        }
+
         return try {
             val parsed = phoneUtil.parse(rawNumber, defaultRegion)
             if (!phoneUtil.isValidNumber(parsed) && !phoneUtil.isPossibleNumber(parsed)) {
@@ -27,11 +33,14 @@ object PhoneNormalizer {
             phoneUtil.format(parsed, PhoneNumberUtil.PhoneNumberFormat.E164)
         } catch (_: Exception) {
             val digits = rawNumber.filter { it.isDigit() || it == '+' }
-            // минимум 7 цифр (международный стандарт для короткого номера)
-            val digitsOnly = digits.filter { it.isDigit() }
             if (digitsOnly.length < 7 || digitsOnly.length > 15) return null
             digits.ifBlank { null }
         }
+    }
+
+    fun isEmergencyNumber(number: String): Boolean {
+        val cleaned = number.replace(Regex("[^\\d]"), "")
+        return cleaned in EMERGENCY_NUMBERS
     }
 
     /** Быстрая проверка: строка должна выглядеть как номер телефона. */
@@ -45,6 +54,8 @@ object PhoneNormalizer {
         }
         if (!allowed) return false
         val digits = trimmed.count { it.isDigit() }
-        return digits in 7..15
+        return digits in 2..15
     }
+
+    private val EMERGENCY_NUMBERS = setOf("112", "101", "102", "103", "104")
 }

@@ -2,11 +2,13 @@ package com.antispam.blocker.ui.navigation
 
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Block
 import androidx.compose.material.icons.outlined.Call
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.VerifiedUser
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Block
 import androidx.compose.material.icons.rounded.Call
 import androidx.compose.material.icons.rounded.Home
@@ -39,6 +41,7 @@ sealed class Screen(
     data object Home : Screen("home", "Главная", Icons.Rounded.Home, Icons.Outlined.Home)
     data object CallLog : Screen("log", "Журнал", Icons.Rounded.Call, Icons.Outlined.Call)
     data object Blacklist : Screen("blacklist", "Список", Icons.Rounded.Block, Icons.Outlined.Block)
+    data object ModelDebug : Screen("ai", "ИИ", Icons.Rounded.AutoAwesome, Icons.Outlined.AutoAwesome)
     data object Rules : Screen("rules", "Правила", Icons.Rounded.VerifiedUser, Icons.Outlined.VerifiedUser)
     data object Settings : Screen("settings", "Ещё", Icons.Rounded.Settings, Icons.Outlined.Settings)
 }
@@ -49,14 +52,14 @@ fun AppNavigation(onboardingNeeded: Boolean, onOnboardingComplete: () -> Unit) {
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = navBackStackEntry?.destination
 
-    val screens = listOf(Screen.Home, Screen.CallLog, Screen.Blacklist, Screen.Rules, Screen.Settings)
+    val screens = listOf(Screen.Home, Screen.CallLog, Screen.Blacklist, Screen.ModelDebug, Screen.Settings)
 
     val startDestination = if (onboardingNeeded) "onboarding" else Screen.Home.route
 
     Scaffold(
         containerColor = Ink,
         bottomBar = {
-            if (currentDestination?.route != "onboarding") {
+            if (currentDestination?.route != "onboarding" && currentDestination?.route != "questionnaire") {
                 NavigationBar(
                     containerColor = Ink,
                     tonalElevation = 0.dp
@@ -102,14 +105,22 @@ fun AppNavigation(onboardingNeeded: Boolean, onOnboardingComplete: () -> Unit) {
             composable("onboarding") {
                 OnboardingScreen(onComplete = {
                     onOnboardingComplete()
-                    navController.navigate(Screen.Home.route) {
+                    navController.navigate("questionnaire") {
                         popUpTo("onboarding") { inclusive = true }
+                    }
+                })
+            }
+            composable("questionnaire") {
+                QuestionnaireScreen(onComplete = {
+                    navController.navigate(Screen.Home.route) {
+                        popUpTo("questionnaire") { inclusive = true }
                     }
                 })
             }
             composable(Screen.Home.route) { HomeScreen() }
             composable(Screen.CallLog.route) { CallLogScreen() }
             composable(Screen.Blacklist.route) { BlacklistScreen() }
+            composable(Screen.ModelDebug.route) { ModelDebugScreen() }
             composable(Screen.Rules.route) { RulesScreen() }
             composable(Screen.Settings.route) { SettingsScreen() }
         }
